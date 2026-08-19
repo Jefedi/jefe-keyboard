@@ -1,27 +1,18 @@
 package ovh.jefe.keyboard
 
 import android.content.Context
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Rect
-import android.graphics.RectF
-import android.graphics.Typeface
+import android.graphics.*
 import android.graphics.drawable.Drawable
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import androidx.core.content.ContextCompat
-import kotlin.math.abs
 
 /**
- * Vue clavier QWERTY avec:
- * - Rangée chiffres (1-0) toujours visible
- * - Layout QWERTY + accents FR via appui long
- * - Barre de suggestions en haut
- * - Boutons: mic (dictée), traduire, supprimer, entrée, shift, espace
- * - Tout dessiné sur Canvas — pas de layout XML par touche
+ * Vue clavier QWERTY — layout propre par poids de colonnes.
+ * Chaque rangée est une liste de KeyDef avec un weight.
+ * Le layout est calculé automatiquement, alignement parfait.
  */
 class KeyboardView @JvmOverloads constructor(
     context: Context,
@@ -39,7 +30,6 @@ class KeyboardView @JvmOverloads constructor(
     var onTranslateClick: (() -> Unit)? = null
     var onSuggestionClick: ((String) -> Unit)? = null
 
-    // ─── State ───
     var suggestions: List<String> = emptyList()
         set(value) { field = value; invalidate() }
 
@@ -49,15 +39,21 @@ class KeyboardView @JvmOverloads constructor(
     var isRecording = false
         set(value) { field = value; invalidate() }
 
-    // ─── Layouts ───
-    private val qwertyRows = listOf(
-        "1234567890",
-        "qwertyuiop",
-        "asdfghjkl",
-        "zxcvbnm"
+    // ─── Key definition ───
+    enum class KeyAction { CHAR, DELETE, ENTER, SHIFT, SPACE, MIC, TRANSLATE, SUGGESTION }
+
+    data class KeyDef(
+        val action: KeyAction,
+        val label: String = "",
+        val char: Char? = null,
+        val weight: Float = 1f,
+        val iconType: IconType? = null,
+        val isSpecial: Boolean = false
     )
 
-    // Accents pour appui long (FR)
+    enum class IconType { MIC, TRANSLATE, DELETE, ENTER, SHIFT }
+
+    // ─── Accents pour appui long ───
     private val accentMap = mapOf(
         'a' to listOf('à', 'â', 'æ'),
         'e' to listOf('é', 'è', 'ê', 'ë'),
@@ -68,258 +64,271 @@ class KeyboardView @JvmOverloads constructor(
         'n' to listOf('ñ'),
     )
 
+    // ─── Layout rows (weights will be normalized per row) ───
+    private val numberRow = listOf(
+        KeyDef(KeyAction.CHAR, "1", '1'), KeyDef(KeyAction.CHAR, "2", '2'),
+        KeyDef(KeyAction.CHAR, "3", '3'), KeyDef(KeyAction.CHAR, "4", '4'),
+        KeyDef(KeyAction.CHAR, "5", '5'), KeyDef(KeyAction.CHAR, "6", '6'),
+        KeyDef(KeyAction.CHAR, "7", '7'), KeyDef(KeyAction.CHAR, "8", '8'),
+        KeyDef(KeyAction.CHAR, "9", '9'), KeyDef(KeyAction.CHAR, "0", '0'),
+    )
+
+    private val row1 = listOf(
+        KeyDef(KeyAction.CHAR, "q", 'q'), KeyDef(KeyAction.CHAR, "w", 'w'),
+        KeyDef(KeyAction.CHAR, "e", 'e'), KeyDef(KeyAction.CHAR, "r", 'r'),
+        KeyDef(KeyAction.CHAR, "t", 't'), KeyDef(KeyAction.CHAR, "y", 'y'),
+        KeyDef(KeyAction.CHAR, "u", 'u'), KeyDef(KeyAction.CHAR, "i", 'i'),
+        KeyDef(KeyAction.CHAR, "o", 'o'), KeyDef(KeyAction.CHAR, "p", 'p'),
+    )
+
+    private val row2 = listOf(
+        KeyDef(KeyAction.CHAR, "a", 'a'), KeyDef(KeyAction.CHAR, "s", 's'),
+        KeyDef(KeyAction.CHAR, "d", 'd'), KeyDef(KeyAction.CHAR, "f", 'f'),
+        KeyDef(KeyAction.CHAR, "g", 'g'), KeyDef(KeyAction.CHAR, "h", 'h'),
+        KeyDef(KeyAction.CHAR, "j", 'j'), KeyDef(KeyAction.CHAR, "k", 'k'),
+        KeyDef(KeyAction.CHAR, "l", 'l'),
+    )
+
+    // Row 3: shift(1.5) + z x c v b n m(7x1) + delete(1.5) = 10
+    private val row3 = listOf(
+        KeyDef(KeyAction.SHIFT, "⇧", weight = 1.5f, iconType = IconType.SHIFT, isSpecial = true),
+        KeyDef(KeyAction.CHAR, "z", 'z'), KeyDef(KeyAction.CHAR, "x", 'x'),
+        KeyDef(KeyAction.CHAR, "c", 'c'), KeyDef(KeyAction.CHAR, "v", 'v'),
+        KeyDef(KeyAction.CHAR, "b", 'b'), KeyDef(KeyAction.CHAR, "n", 'n'),
+        KeyDef(KeyAction.CHAR, "m", 'm'),
+        KeyDef(KeyAction.DELETE, "⌫", weight = 1.5f, iconType = IconType.DELETE, isSpecial = true),
+    )
+
+    // Row 4: mic(1.2) + translate(1.2) + ","(0.8) + space(4) + "."(0.8) + enter(2) = 10
+    private val row4 = listOf(
+        KeyDef(KeyAction.MIC, "", weight = 1.2f, iconType = IconType.MIC, isSpecial = true),
+        KeyDef(KeyAction.TRANSLATE, "", weight = 1.2f, iconType = IconType.TRANSLATE, isSpecial = true),
+        KeyDef(KeyAction.CHAR, ",", ',', weight = 0.8f),
+        KeyDef(KeyAction.SPACE, "espace", weight = 4f, isSpecial = true),
+        KeyDef(KeyAction.CHAR, ".", '.', weight = 0.8f),
+        KeyDef(KeyAction.ENTER, "↵", weight = 2f, iconType = IconType.ENTER, isSpecial = true),
+    )
+
+    private val allRows = listOf(numberRow, row1, row2, row3, row4)
+
     // ─── Dimensions ───
-    private val keyHeight: Float
-    private val suggestionHeight: Float
-    private val keyPadding: Float
-    private val cornerRadius: Float
-    private val labelTextSize: Float
-    private val specialTextSize: Float
+    private val dm = context.resources.displayMetrics
+    private val keyH = dp(44)
+    private val sugH = dp(38)
+    private val pad = dp(4)
+    private val corner = dp(6)
+    private val labelTextSize = sp(18)
+    private val specialTextSize = sp(14)
+    private val sugTextSize = sp(15)
 
     // ─── Paints ───
-    private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val keySpecialBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val keyPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val keyTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val specialTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val suggestionTextPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val suggestionBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val suggestionDividerPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val recordingPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val keyBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.key_bg) }
+    private val keySpecialBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.key_bg_special) }
+    private val keyPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.key_pressed) }
+    private val keyTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = ContextCompat.getColor(context, R.color.key_text)
+        textSize = labelTextSize
+        textAlign = Paint.Align.CENTER
+    }
+    private val specialTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = ContextCompat.getColor(context, R.color.key_text)
+        textSize = specialTextSize
+        textAlign = Paint.Align.CENTER
+    }
+    private val sugBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.suggestion_bg) }
+    private val sugTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = ContextCompat.getColor(context, R.color.suggestion_text)
+        textSize = sugTextSize
+        textAlign = Paint.Align.CENTER
+    }
+    private val sugDivPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33000000 }
+    private val recPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = ContextCompat.getColor(context, R.color.recording_red)
+        textSize = specialTextSize
+        textAlign = Paint.Align.CENTER
+    }
 
-    private val micIcon: Drawable?
-    private val translateIcon: Drawable?
-    private val deleteIcon: Drawable?
-    private val enterIcon: Drawable?
-    private val shiftIcon: Drawable?
+    // ─── Icons ───
+    private val micIcon: Drawable? = ContextCompat.getDrawable(context, R.drawable.ic_mic)
+    private val translateIcon: Drawable? = ContextCompat.getDrawable(context, R.drawable.ic_translate)
+    private val deleteIcon: Drawable? = ContextCompat.getDrawable(context, android.R.drawable.ic_input_delete)
+    private val enterIcon: Drawable? = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_send)
+    private val shiftIcon: Drawable? = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_sort_by_size)
+
+    // ─── Computed layout ───
+    private data class ComputedKey(val rect: RectF, val def: KeyDef, val row: Int, val col: Int)
+    private var computedKeys: List<ComputedKey> = emptyList()
+    private var computedSuggestions: List<ComputedKey> = emptyList()
 
     // ─── Touch state ───
-    private var pressedKey: KeyPos? = null
+    private var pressedKey: ComputedKey? = null
     private var longPressRunnable: Runnable? = null
     private var longPressTriggered = false
     private val longPressDelay = 400L
-
     private var accentPopup: List<Char>? = null
-    private var accentPopupX = 0f
-    private var accentPopupY = 0f
-
-    private data class KeyPos(val row: Int, val col: Int, val type: KeyType, val char: Char? = null)
-    private enum class KeyType { CHAR, DELETE, ENTER, SHIFT, SPACE, MIC, TRANSLATE, SUGGESTION }
-
-    init {
-        val dm = context.resources.displayMetrics
-        keyHeight = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 44f, dm)
-        suggestionHeight = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 38f, dm)
-        keyPadding = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4f, dm)
-        cornerRadius = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f, dm)
-        labelTextSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 18f, dm)
-        specialTextSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 14f, dm)
-
-        keyBgPaint.color = ContextCompat.getColor(context, R.color.key_bg)
-        keySpecialBgPaint.color = ContextCompat.getColor(context, R.color.key_bg_special)
-        keyPressedPaint.color = ContextCompat.getColor(context, R.color.key_pressed)
-        keyTextPaint.color = ContextCompat.getColor(context, R.color.key_text)
-        keyTextPaint.textSize = labelTextSize
-        keyTextPaint.textAlign = Paint.Align.CENTER
-        specialTextPaint.color = ContextCompat.getColor(context, R.color.key_text)
-        specialTextPaint.textSize = specialTextSize
-        specialTextPaint.textAlign = Paint.Align.CENTER
-        suggestionTextPaint.color = ContextCompat.getColor(context, R.color.suggestion_text)
-        suggestionTextPaint.textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 15f, dm)
-        suggestionTextPaint.textAlign = Paint.Align.CENTER
-        suggestionBgPaint.color = ContextCompat.getColor(context, R.color.suggestion_bg)
-        suggestionDividerPaint.color = 0x33000000
-        recordingPaint.color = ContextCompat.getColor(context, R.color.recording_red)
-        recordingPaint.textSize = specialTextSize
-        recordingPaint.textAlign = Paint.Align.CENTER
-
-        micIcon = ContextCompat.getDrawable(context, R.drawable.ic_mic)
-        translateIcon = ContextCompat.getDrawable(context, R.drawable.ic_translate)
-        deleteIcon = ContextCompat.getDrawable(context, android.R.drawable.ic_input_delete)
-        enterIcon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_send)
-        shiftIcon = ContextCompat.getDrawable(context, android.R.drawable.ic_menu_sort_by_size)
-    }
-
-    // ─── Layout computation ───
-    private fun getKeyRect(row: Int, col: Int, totalCols: Int, rowOffset: Float, keyWidth: Float): RectF {
-        val left = keyPadding + col * (keyWidth + keyPadding) + rowOffset
-        val top = suggestionHeight + keyPadding + row * (keyHeight + keyPadding)
-        return RectF(left, top, left + keyWidth, top + keyHeight)
-    }
-
-    private fun getSpecialKeyRect(row: Int, col: Int, widthRatio: Float, rowOffset: Float, keyWidth: Float): RectF {
-        val w = keyWidth * widthRatio
-        val left = keyPadding + col * (keyWidth + keyPadding) + rowOffset
-        val top = suggestionHeight + keyPadding + row * (keyHeight + keyPadding)
-        return RectF(left, top, left + w, top + keyHeight)
-    }
-
-    private fun getSuggestionRect(index: Int): RectF {
-        val w = width / 3f
-        return RectF(index * w, 0f, (index + 1) * w, suggestionHeight)
-    }
+    private var accentPopupRects: List<RectF> = emptyList()
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val totalHeight = (suggestionHeight + 5 * (keyHeight + keyPadding) + keyPadding).toInt()
-        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), totalHeight)
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        val totalH = sugH + pad + allRows.size * (keyH + pad) + pad
+        setMeasuredDimension(w, totalH.toInt())
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (changed) computeLayout()
+    }
+
+    private fun computeLayout() {
+        val w = width.toFloat()
+        val result = mutableListOf<ComputedKey>()
+        val sugResult = mutableListOf<ComputedKey>()
+
+        // ─── Suggestion bar (3 slots) ───
+        val sugW = w / 3f
+        for (i in 0..2) {
+            val rect = RectF(i * sugW, 0, (i + 1) * sugW, sugH)
+            sugResult.add(ComputedKey(rect, KeyDef(KeyAction.SUGGESTION), -1, i))
+        }
+
+        // ─── Keyboard rows ───
+        for ((rowIdx, row) in allRows.withIndex()) {
+            val totalWeight = row.sumOf { it.weight.toDouble() }.toFloat()
+            val availW = w - pad * (row.size + 1)
+            val unitW = availW / totalWeight
+            val y = sugH + pad + rowIdx * (keyH + pad)
+
+            var x = pad
+            for ((colIdx, key) in row.withIndex()) {
+                val kw = unitW * key.weight
+                val rect = RectF(x, y, x + kw, y + keyH)
+                result.add(ComputedKey(rect, key, rowIdx, colIdx))
+                x += kw + pad
+            }
+        }
+
+        computedKeys = result
+        computedSuggestions = sugResult
     }
 
     // ─── Draw ───
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val w = width.toFloat()
-        val baseKeyWidth = (w - 11 * keyPadding) / 10f
+        if (computedKeys.isEmpty()) computeLayout()
 
         // ─── Suggestion bar ───
-        canvas.drawRect(0f, 0f, w, suggestionHeight, suggestionBgPaint)
-        for (i in suggestions.indices) {
-            val rect = getSuggestionRect(i)
-            canvas.drawText(suggestions[i], rect.centerX(), rect.centerY() + suggestionTextPaint.textSize / 3, suggestionTextPaint)
+        for (i in computedSuggestions.indices) {
+            val ck = computedSuggestions[i]
+            canvas.drawRect(ck.rect, sugBgPaint)
+            if (i < suggestions.size) {
+                canvas.drawText(
+                    suggestions[i],
+                    ck.rect.centerX(),
+                    ck.rect.centerY() + sugTextSize / 3,
+                    sugTextPaint
+                )
+            }
             if (i > 0) {
-                canvas.drawLine(rect.left, 5f, rect.left, suggestionHeight - 5f, suggestionDividerPaint)
+                canvas.drawLine(ck.rect.left, 5f, ck.rect.left, sugH - 5f, sugDivPaint)
             }
         }
         if (isRecording) {
-            canvas.drawText("● Enregistrement…", w / 2, suggestionHeight - 8f, recordingPaint)
+            canvas.drawText("● Enregistrement…", width / 2f, sugH - 8f, recPaint)
         }
 
-        // ─── Row 0: Numbers ───
-        for (col in 0..9) {
-            val rect = getKeyRect(0, col, 10, 0f, baseKeyWidth)
-            drawKey(canvas, rect, (col + 1).toString().let { if (col == 9) "0" else it }, pressedKey?.row == 0 && pressedKey?.col == col)
+        // ─── Keys ───
+        for (ck in computedKeys) {
+            val pressed = pressedKey == ck
+            drawKey(canvas, ck, pressed)
         }
 
-        // ─── Row 1: QWERTYUIOP ───
-        for (col in 0..9) {
-            val rect = getKeyRect(1, col, 10, 0f, baseKeyWidth)
-            val c = qwertyRows[1][col]
-            val display = if (isShifted) c.uppercaseChar().toString() else c.toString()
-            drawKey(canvas, rect, display, pressedKey?.row == 1 && pressedKey?.col == col)
+        // ─── Accent popup ───
+        if (accentPopup != null && accentPopupRects.isNotEmpty()) {
+            for ((i, rect) in accentPopupRects.withIndex()) {
+                canvas.drawRoundRect(rect, corner, corner, keyBgPaint)
+                val c = accentPopup!![i]
+                val display = if (isShifted) c.uppercaseChar() else c
+                canvas.drawText(display.toString(), rect.centerX(), rect.centerY() + labelTextSize / 3, keyTextPaint)
+            }
         }
-
-        // ─── Row 2: ASDFGHJKL (slightly offset) ───
-        val row2Offset = baseKeyWidth * 0.3f
-        for (col in 0..8) {
-            val rect = getKeyRect(2, col, 9, row2Offset, baseKeyWidth)
-            val c = qwertyRows[2][col]
-            val display = if (isShifted) c.uppercaseChar().toString() else c.toString()
-            drawKey(canvas, rect, display, pressedKey?.row == 2 && pressedKey?.col == col)
-        }
-
-        // ─── Row 3: ZXCVBNM + special keys ───
-        val row3Y = suggestionHeight + keyPadding + 3 * (keyHeight + keyPadding)
-        val shiftWidth = baseKeyWidth * 1.5f
-        val deleteWidth = baseKeyWidth * 1.5f
-        val charCols = 7
-        val charAreaWidth = 7 * baseKeyWidth + 6 * keyPadding
-        val row3Total = shiftWidth + keyPadding + charAreaWidth + keyPadding + deleteWidth + keyPadding + baseKeyWidth * 2 + keyPadding
-        val row3Start = (w - row3Total) / 2f + keyPadding
-
-        // Shift key
-        var x = row3Start
-        val shiftRect = RectF(x, row3Y, x + shiftWidth, row3Y + keyHeight)
-        drawSpecialKey(canvas, shiftRect, shiftIcon, pressedKey?.type == KeyType.SHIFT)
-        x += shiftWidth + keyPadding
-
-        // ZXCVBNM
-        for (col in 0..6) {
-            val c = qwertyRows[3][col]
-            val display = if (isShifted) c.uppercaseChar().toString() else c.toString()
-            val rect = RectF(x, row3Y, x + baseKeyWidth, row3Y + keyHeight)
-            drawKey(canvas, rect, display, pressedKey?.row == 3 && pressedKey?.col == col)
-            x += baseKeyWidth + keyPadding
-        }
-
-        // Delete key
-        val delRect = RectF(x, row3Y, x + deleteWidth, row3Y + keyHeight)
-        drawSpecialKey(canvas, delRect, deleteIcon, pressedKey?.type == KeyType.DELETE)
-        x += deleteWidth + keyPadding
-
-        // ─── Row 4: Mic, Translate, Comma, Space, Period, Enter ───
-        val row4Y = suggestionHeight + keyPadding + 4 * (keyHeight + keyPadding)
-        val micW = baseKeyWidth * 1.3f
-        val translateW = baseKeyWidth * 1.3f
-        val commaW = baseKeyWidth * 0.8f
-        val periodW = baseKeyWidth * 0.8f
-        val spaceW = baseKeyWidth * 3.5f
-        val enterW = baseKeyWidth * 1.8f
-        val row4Total = micW + translateW + commaW + spaceW + periodW + enterW + 6 * keyPadding
-        var x4 = (w - row4Total) / 2f
-
-        // Mic
-        val micRect = RectF(x4, row4Y, x4 + micW, row4Y + keyHeight)
-        val micBg = if (isRecording) recordingPaint else keySpecialBgPaint
-        drawSpecialKey(canvas, micRect, micIcon, pressedKey?.type == KeyType.MIC, micBg)
-        x4 += micW + keyPadding
-
-        // Translate
-        val trRect = RectF(x4, row4Y, x4 + translateW, row4Y + keyHeight)
-        drawSpecialKey(canvas, trRect, translateIcon, pressedKey?.type == KeyType.TRANSLATE)
-        x4 += translateW + keyPadding
-
-        // Comma
-        val commaRect = RectF(x4, row4Y, x4 + commaW, row4Y + keyHeight)
-        drawKey(canvas, commaRect, ",", pressedKey?.row == 4 && pressedKey?.col == 0)
-        x4 += commaW + keyPadding
-
-        // Space
-        val spaceRect = RectF(x4, row4Y, x4 + spaceW, row4Y + keyHeight)
-        drawSpecialKey(canvas, spaceRect, null, pressedKey?.type == KeyType.SPACE, keySpecialBgPaint, "espace")
-        x4 += spaceW + keyPadding
-
-        // Period
-        val periodRect = RectF(x4, row4Y, x4 + periodW, row4Y + keyHeight)
-        drawKey(canvas, periodRect, ".", pressedKey?.row == 4 && pressedKey?.col == 1)
-        x4 += periodW + keyPadding
-
-        // Enter
-        val enterRect = RectF(x4, row4Y, x4 + enterW, row4Y + keyHeight)
-        drawSpecialKey(canvas, enterRect, enterIcon, pressedKey?.type == KeyType.ENTER)
     }
 
-    private fun drawKey(canvas: Canvas, rect: RectF, label: String, pressed: Boolean) {
-        val paint = if (pressed) keyPressedPaint else keyBgPaint
-        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
-        canvas.drawText(label, rect.centerX(), rect.centerY() + labelTextSize / 3, keyTextPaint)
-    }
+    private fun drawKey(canvas: Canvas, ck: ComputedKey, pressed: Boolean) {
+        val def = ck.def
+        val bgPaint = when {
+            pressed -> keyPressedPaint
+            def.action == KeyAction.MIC && isRecording -> recPaint
+            def.isSpecial -> keySpecialBgPaint
+            else -> keyBgPaint
+        }
+        canvas.drawRoundRect(ck.rect, corner, corner, bgPaint)
 
-    private fun drawSpecialKey(canvas: Canvas, rect: RectF, icon: Drawable?, pressed: Boolean, bgPaint: Paint? = null, label: String? = null) {
-        val paint = if (pressed) keyPressedPaint else (bgPaint ?: keySpecialBgPaint)
-        canvas.drawRoundRect(rect, cornerRadius, cornerRadius, paint)
+        // Icon or text
+        val icon = when (def.iconType) {
+            IconType.MIC -> micIcon
+            IconType.TRANSLATE -> translateIcon
+            IconType.DELETE -> deleteIcon
+            IconType.ENTER -> enterIcon
+            IconType.SHIFT -> shiftIcon
+            else -> null
+        }
+
         if (icon != null) {
-            val iconSize = (keyHeight * 0.5f).toInt()
-            val cx = rect.centerX().toInt() - iconSize / 2
-            val cy = rect.centerY().toInt() - iconSize / 2
+            val iconSize = (keyH * 0.45f).toInt()
+            val cx = ck.rect.centerX().toInt() - iconSize / 2
+            val cy = ck.rect.centerY().toInt() - iconSize / 2
             icon.setBounds(cx, cy, cx + iconSize, cy + iconSize)
             icon.draw(canvas)
-        } else if (label != null) {
-            canvas.drawText(label, rect.centerX(), rect.centerY() + specialTextSize / 3, specialTextPaint)
+            // Shift indicator
+            if (def.action == KeyAction.SHIFT && isShifted) {
+                val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ContextCompat.getColor(context, R.color.primary) }
+                canvas.drawCircle(ck.rect.centerX(), ck.rect.bottom - dp(6), dp(3).toFloat(), dotPaint)
+            }
+        } else if (def.label.isNotEmpty()) {
+            val display = if (isShifted && def.char != null) {
+                def.char.uppercaseChar().toString()
+            } else {
+                def.label
+            }
+            val textPaint = if (def.isSpecial) specialTextPaint else keyTextPaint
+            canvas.drawText(display, ck.rect.centerX(), ck.rect.centerY() + textPaint.textSize / 3, textPaint)
         }
     }
 
-    // ─── Touch handling ───
+    // ─── Touch ───
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 longPressTriggered = false
-                val key = hitTest(event.x, event.y)
-                if (key != null) {
-                    pressedKey = key
-                    invalidate()
+                accentPopup = null
+                accentPopupRects = emptyList()
 
-                    // Long press for accents on char keys
-                    if (key.type == KeyType.CHAR && key.char != null) {
-                        val accents = accentMap[key.char]
-                        if (accents != null && accents.isNotEmpty()) {
-                            longPressRunnable = Runnable {
-                                longPressTriggered = true
-                                accentPopup = accents
-                                accentPopupX = event.x
-                                accentPopupY = event.y - keyHeight
-                                invalidate()
+                val key = hitTest(event.x, event.y)
+                pressedKey = key
+                invalidate()
+
+                // Long press for accents
+                if (key != null && key.def.char != null) {
+                    val accents = accentMap[key.def.char]
+                    if (accents != null && accents.isNotEmpty()) {
+                        val k = key
+                        longPressRunnable = Runnable {
+                            longPressTriggered = true
+                            accentPopup = accents
+                            // Position popup above the key
+                            val popupW = dp(40)
+                            val totalW = accents.size * popupW + (accents.size - 1) * pad
+                            var px = k.rect.centerX() - totalW / 2f
+                            if (px < pad) px = pad
+                            if (px + totalW > width - pad) px = width - pad - totalW
+                            val py = k.rect.top - keyH - pad
+                            accentPopupRects = accents.mapIndexed { i, _ ->
+                                val r = RectF(px + i * (popupW + pad), py, px + i * (popupW + pad) + popupW, py + keyH)
+                                r
                             }
-                            postDelayed(longPressRunnable!!, longPressDelay)
+                            invalidate()
                         }
+                        postDelayed(longPressRunnable!!, longPressDelay)
                     }
                 }
                 return true
@@ -329,29 +338,24 @@ class KeyboardView @JvmOverloads constructor(
                 longPressRunnable?.let { removeCallbacks(it) }
                 longPressRunnable = null
 
-                val key = pressedKey
-                if (key != null && !longPressTriggered) {
-                    handleKeyPress(key)
-                }
-                pressedKey = null
-
-                // If accent popup was shown, handle accent selection
-                if (longPressTriggered && accentPopup != null) {
-                    // Find which accent was tapped
-                    val accents = accentPopup!!
-                    val popupY = accentPopupY
-                    val popupWidth = baseKeyWidthForAccents()
-                    for (i in accents.indices) {
-                        val ax = accentPopupX - (accents.size * popupWidth) / 2f + i * popupWidth
-                        if (event.x >= ax && event.x < ax + popupWidth && event.y >= popupY && event.y < popupY + keyHeight) {
-                            val displayChar = if (isShifted) accents[i].uppercaseChar() else accents[i]
-                            onKeyChar?.invoke(displayChar.toString())
+                if (!longPressTriggered) {
+                    pressedKey?.let { handleKey(it) }
+                } else if (accentPopup != null) {
+                    // Check which accent was tapped
+                    for ((i, rect) in accentPopupRects.withIndex()) {
+                        if (rect.contains(event.x, event.y)) {
+                            val c = accentPopup!![i]
+                            val display = if (isShifted) c.uppercaseChar() else c
+                            onKeyChar?.invoke(display.toString())
                             break
                         }
                     }
-                    accentPopup = null
-                    invalidate()
                 }
+
+                pressedKey = null
+                accentPopup = null
+                accentPopupRects = emptyList()
+                invalidate()
                 return true
             }
 
@@ -360,6 +364,7 @@ class KeyboardView @JvmOverloads constructor(
                 longPressRunnable = null
                 pressedKey = null
                 accentPopup = null
+                accentPopupRects = emptyList()
                 invalidate()
                 return true
             }
@@ -367,113 +372,44 @@ class KeyboardView @JvmOverloads constructor(
         return super.onTouchEvent(event)
     }
 
-    private fun baseKeyWidthForAccents() = (width - 11 * keyPadding) / 10f
-
-    private fun hitTest(x: Float, y: Float): KeyPos? {
-        val w = width.toFloat()
-        val baseKeyWidth = (w - 11 * keyPadding) / 10f
-
-        // Suggestions
-        if (y < suggestionHeight) {
-            val idx = (x / (w / 3f)).toInt()
-            if (idx in suggestions.indices) {
-                return KeyPos(-1, idx, KeyType.SUGGESTION)
+    private fun hitTest(x: Float, y: Float): ComputedKey? {
+        // Check suggestions
+        for (ck in computedSuggestions) {
+            if (ck.rect.contains(x, y)) {
+                if (ck.col < suggestions.size) return ck
+                return null
             }
-            return null
         }
-
-        // Row 0: numbers
-        for (col in 0..9) {
-            val rect = getKeyRect(0, col, 10, 0f, baseKeyWidth)
-            if (rect.contains(x, y)) return KeyPos(0, col, KeyType.CHAR, (col + 1).toString().let { if (col == 9) '0' else it[0] })
+        // Check keys
+        for (ck in computedKeys) {
+            if (ck.rect.contains(x, y)) return ck
         }
-
-        // Row 1: qwertyuiop
-        for (col in 0..9) {
-            val rect = getKeyRect(1, col, 10, 0f, baseKeyWidth)
-            if (rect.contains(x, y)) return KeyPos(1, col, KeyType.CHAR, qwertyRows[1][col])
-        }
-
-        // Row 2: asdfghjkl
-        val row2Offset = baseKeyWidth * 0.3f
-        for (col in 0..8) {
-            val rect = getKeyRect(2, col, 9, row2Offset, baseKeyWidth)
-            if (rect.contains(x, y)) return KeyPos(2, col, KeyType.CHAR, qwertyRows[2][col])
-        }
-
-        // Row 3: shift + zxcvbnm + delete
-        val row3Y = suggestionHeight + keyPadding + 3 * (keyHeight + keyPadding)
-        val shiftWidth = baseKeyWidth * 1.5f
-        val deleteWidth = baseKeyWidth * 1.5f
-        val charAreaWidth = 7 * baseKeyWidth + 6 * keyPadding
-        val row3Total = shiftWidth + keyPadding + charAreaWidth + keyPadding + deleteWidth + 2 * keyPadding
-        val row3Start = (w - row3Total) / 2f + keyPadding
-
-        var xCursor = row3Start
-        if (y >= row3Y && y < row3Y + keyHeight) {
-            // Shift
-            if (x >= xCursor && x < xCursor + shiftWidth) return KeyPos(3, -1, KeyType.SHIFT)
-            xCursor += shiftWidth + keyPadding
-            // Chars
-            for (col in 0..6) {
-                if (x >= xCursor && x < xCursor + baseKeyWidth) return KeyPos(3, col, KeyType.CHAR, qwertyRows[3][col])
-                xCursor += baseKeyWidth + keyPadding
-            }
-            // Delete
-            if (x >= xCursor && x < xCursor + deleteWidth) return KeyPos(3, -2, KeyType.DELETE)
-        }
-
-        // Row 4: mic, translate, comma, space, period, enter
-        val row4Y = suggestionHeight + keyPadding + 4 * (keyHeight + keyPadding)
-        if (y >= row4Y && y < row4Y + keyHeight) {
-            val micW = baseKeyWidth * 1.3f
-            val translateW = baseKeyWidth * 1.3f
-            val commaW = baseKeyWidth * 0.8f
-            val periodW = baseKeyWidth * 0.8f
-            val spaceW = baseKeyWidth * 3.5f
-            val enterW = baseKeyWidth * 1.8f
-            val row4Total = micW + translateW + commaW + spaceW + periodW + enterW + 6 * keyPadding
-            var x4 = (w - row4Total) / 2f
-
-            if (x >= x4 && x < x4 + micW) return KeyPos(4, -3, KeyType.MIC)
-            x4 += micW + keyPadding
-            if (x >= x4 && x < x4 + translateW) return KeyPos(4, -4, KeyType.TRANSLATE)
-            x4 += translateW + keyPadding
-            if (x >= x4 && x < x4 + commaW) return KeyPos(4, 0, KeyType.CHAR, ',')
-            x4 += commaW + keyPadding
-            if (x >= x4 && x < x4 + spaceW) return KeyPos(4, -5, KeyType.SPACE)
-            x4 += spaceW + keyPadding
-            if (x >= x4 && x < x4 + periodW) return KeyPos(4, 1, KeyType.CHAR, '.')
-            x4 += periodW + keyPadding
-            if (x >= x4 && x < x4 + enterW) return KeyPos(4, -6, KeyType.ENTER)
-        }
-
         return null
     }
 
-    private fun handleKeyPress(key: KeyPos) {
-        when (key.type) {
-            KeyType.CHAR -> {
-                val c = key.char ?: return
+    private fun handleKey(ck: ComputedKey) {
+        when (ck.def.action) {
+            KeyAction.CHAR -> {
+                val c = ck.def.char ?: return
                 val display = if (isShifted) c.uppercaseChar() else c
                 onKeyChar?.invoke(display.toString())
-                if (isShifted) {
-                    isShifted = false
-                }
+                if (isShifted) isShifted = false
             }
-            KeyType.DELETE -> onKeyDelete?.invoke()
-            KeyType.ENTER -> onKeyEnter?.invoke()
-            KeyType.SPACE -> onKeySpace?.invoke()
-            KeyType.SHIFT -> {
-                isShifted = !isShifted
-            }
-            KeyType.MIC -> onMicClick?.invoke()
-            KeyType.TRANSLATE -> onTranslateClick?.invoke()
-            KeyType.SUGGESTION -> {
-                if (key.col in suggestions.indices) {
-                    onSuggestionClick?.invoke(suggestions[key.col])
+            KeyAction.DELETE -> onKeyDelete?.invoke()
+            KeyAction.ENTER -> onKeyEnter?.invoke()
+            KeyAction.SPACE -> onKeySpace?.invoke()
+            KeyAction.SHIFT -> { isShifted = !isShifted }
+            KeyAction.MIC -> onMicClick?.invoke()
+            KeyAction.TRANSLATE -> onTranslateClick?.invoke()
+            KeyAction.SUGGESTION -> {
+                if (ck.col in suggestions.indices) {
+                    onSuggestionClick?.invoke(suggestions[ck.col])
                 }
             }
         }
     }
+
+    // ─── Utils ───
+    private fun dp(v: Int): Float = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), dm)
+    private fun sp(v: Int): Float = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v.toFloat(), dm)
 }

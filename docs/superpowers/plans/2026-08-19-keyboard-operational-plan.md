@@ -286,7 +286,6 @@ git commit -m "fix: make input sessions safe and predictable"
 - Modify: `app/src/main/res/values/strings.xml`
 - Modify: `app/src/main/res/xml/preferences.xml`
 - Create: `app/src/main/res/drawable/bg_settings_header.xml`
-- Create: `app/src/main/res/drawable/ic_launcher_legacy.xml`
 - Create: `app/src/main/res/mipmap/ic_launcher.xml`
 - Create: `app/src/test/java/ovh/jefe/keyboard/KeyboardViewTest.kt`
 - Create: `app/src/test/java/ovh/jefe/keyboard/SettingsActivityTest.kt`
@@ -336,7 +335,7 @@ Expected: FAIL against the nested `ScrollView` layout and visible simple API-key
 
 - [ ] **Step 6: Implement the settings redesign and legacy icon**
 
-Use a vertical root with an Ink toolbar, compact rounded setup header, and a `FragmentContainerView`/`FrameLayout` filling remaining space. The preference fragment owns the only scrolling list. Move setup actions/status into preferences and refresh on resume and shared-preference changes. Add a compatible unqualified launcher vector at `res/mipmap/ic_launcher.xml`, retaining the adaptive icon at `mipmap-anydpi-v26`.
+Use a vertical root with an Ink toolbar, compact rounded setup header, and a `FrameLayout` filling the remaining space. The preference fragment owns the only scrolling list. Move setup actions/status into preferences and refresh on resume and shared-preference changes. Add a compatible unqualified launcher vector at `res/mipmap/ic_launcher.xml`, retaining the adaptive icon at `mipmap-anydpi-v26`.
 
 - [ ] **Step 7: Verify and commit**
 

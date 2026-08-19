@@ -103,7 +103,7 @@ class KeyboardView @JvmOverloads constructor(
     private var accentPopupX = 0f
     private var accentPopupY = 0f
 
-    private data class KeyPos(val row: Int, col: Int, type: KeyType, char: Char? = null)
+    private data class KeyPos(val row: Int, val col: Int, val type: KeyType, val char: Char? = null)
     private enum class KeyType { CHAR, DELETE, ENTER, SHIFT, SPACE, MIC, TRANSLATE, SUGGESTION }
 
     init {
@@ -156,7 +156,7 @@ class KeyboardView @JvmOverloads constructor(
 
     private fun getSuggestionRect(index: Int): RectF {
         val w = width / 3f
-        return RectF(index * w, 0, (index + 1) * w, suggestionHeight)
+        return RectF(index * w, 0f, (index + 1) * w, suggestionHeight)
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {

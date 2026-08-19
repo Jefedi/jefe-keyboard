@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="key_bg">#3A3A3A</color>
+    <color name="key_bg_special">#4A4A4A</color>
+    <color name="key_text">#E0E0E0</color>
+    <color name="key_pressed">#4A90D9</color>
+    <color name="suggestion_bg">#2A2A2A</color>
+    <color name="suggestion_text">#E0E0E0</color>
+</resources>

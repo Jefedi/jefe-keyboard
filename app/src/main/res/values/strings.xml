@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jefe Keyboard</string>
+    <string name="settings_title">Paramètres Jefe Keyboard</string>
+    <string name="subtype_fr">Français</string>
+
+    <string name="cat_whisper">Dictée vocale (Whisper)</string>
+    <string name="whisper_url_title">URL Whisper</string>
+    <string name="whisper_url_summary">URL de votre serveur Whisper (ex: https://whisper.jefe.al)</string>
+    <string name="whisper_key_title">Clé API (optionnel)</string>
+    <string name="whisper_key_summary">Laisser vide si pas d'auth</string>
+    <string name="whisper_model_title">Modèle</string>
+
+    <string name="cat_translate">Traduction (LibreTranslate)</string>
+    <string name="translate_url_title">URL LibreTranslate</string>
+    <string name="translate_url_summary">URL de votre serveur (ex: https://translate.jefe.al)</string>
+    <string name="translate_key_title">Clé API (optionnel)</string>
+    <string name="translate_key_summary">Laisser vide si pas d'auth</string>
+    <string name="translate_source_title">Langue source</string>
+    <string name="translate_target_title">Langue cible</string>
+</resources>

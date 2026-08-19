@@ -338,4 +338,10 @@ class SettingsActivity : AppCompatActivity() {
         val dm = resources.displayMetrics
         return (this * dm.density).toInt()
     }
+
+    class SettingsFragment : PreferenceFragmentCompat() {
+        override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
+            setPreferencesFromResource(R.xml.preferences, rootKey)
+        }
+    }
 }

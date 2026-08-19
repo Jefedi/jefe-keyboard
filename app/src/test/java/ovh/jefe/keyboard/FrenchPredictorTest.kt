@@ -8,10 +8,10 @@ class FrenchPredictorTest {
         assertEquals(listOf("suis", "vais", "veux"), FrenchPredictor().suggest("", "je"))
     }
 
-    @Test fun `prefix suggestions are unique and limited to three`() {
-        val result = FrenchPredictor().suggest("bo")
-        assertEquals(result.distinct(), result)
-        assertEquals(true, result.size <= 3)
-        assertEquals(true, result.all { it.startsWith("bo") })
+    @Test fun `prefix bo suggestions are the first three distinct completions`() {
+        assertEquals(
+            listOf("bon", "bout", "boire"),
+            FrenchPredictor().suggest("bo"),
+        )
     }
 }

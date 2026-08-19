@@ -17,6 +17,9 @@ Clavier Android avec dictée vocale (Whisper) et traduction (LibreTranslate) sel
 
 ## Build
 ```bash
-gradle assembleDebug
+./gradlew assembleDebug
 ```
+
+Windows: `gradlew.bat assembleDebug`
+
 APK: `app/build/outputs/apk/debug/app-debug.apk`

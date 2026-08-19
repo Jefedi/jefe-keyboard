@@ -4,4 +4,3 @@ build/
 local.properties
 .idea/
 .DS_Store
-gradle-wrapper.jar

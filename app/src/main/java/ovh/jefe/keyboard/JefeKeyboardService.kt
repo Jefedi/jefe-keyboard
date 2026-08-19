@@ -6,8 +6,6 @@ import android.inputmethodservice.InputMethodService
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
-import android.text.InputType
-import android.util.Log
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Toast
@@ -21,8 +19,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * IME Service — le cerveau du clavier.
- * Connecte KeyboardView → InputConnection + Whisper + LibreTranslate.
+ * IME Service — connecte KeyboardView → InputConnection + Whisper + LibreTranslate.
  */
 class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() {
 
@@ -34,12 +31,6 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
     private var recordingMode = false
     private var recorder: MediaRecorder? = null
     private var audioFile: File? = null
-    private val handler = Handler(Looper.getMainLooper())
-
-    companion object {
-        private const val TAG = "JefeKeyboard"
-        private const val RECORD_AUDIO_REQUEST = 100
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -52,12 +43,17 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         return keyboardView
     }
 
+    override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(info, restarting)
+        // Set enter key action based on field type
+        keyboardView.enterAction = info?.imeOptions?.and(EditorInfo.IME_MASK_ACTION) ?: EditorInfo.IME_ACTION_UNSPECIFIED
+    }
+
     private fun setupKeyboardCallbacks() {
         keyboardView.onKeyChar = { char -> handleChar(char) }
         keyboardView.onKeyDelete = { handleDelete() }
         keyboardView.onKeyEnter = { handleEnter() }
         keyboardView.onKeySpace = { handleSpace() }
-        keyboardView.onKeyShift = { /* handled in view */ }
         keyboardView.onMicClick = { toggleRecording() }
         keyboardView.onTranslateClick = { translateSelection() }
         keyboardView.onSuggestionClick = { word -> acceptSuggestion(word) }
@@ -75,12 +71,29 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         if (currentWord.isNotEmpty()) {
             currentWord.deleteCharAt(currentWord.length - 1)
         }
-        ic.deleteSurroundingText(1, 0)
+        // Use deleteTextBeforeCursor for reliability
+        ic.deleteTextBeforeCursor()
         updateSuggestions()
     }
 
     private fun handleEnter() {
-        currentInputConnection.commitText("\n", 1)
+        val ic = currentInputConnection ?: return
+        val editorInfo = currentInputEditorInfo
+
+        // Check if the field expects a specific action (Go, Search, Send, Next, Done)
+        val action = editorInfo?.imeOptions?.and(EditorInfo.IME_MASK_ACTION)
+        when (action) {
+            EditorInfo.IME_ACTION_GO, EditorInfo.IME_ACTION_SEARCH,
+            EditorInfo.IME_ACTION_SEND, EditorInfo.IME_ACTION_NEXT,
+            EditorInfo.IME_ACTION_DONE -> {
+                ic.performEditorAction(action)
+            }
+            else -> {
+                // Multi-line field or unspecified: insert newline
+                ic.commitText("\n", 1)
+            }
+        }
+
         currentWord.clear()
         lastWord = null
         updateSuggestions()
@@ -98,13 +111,10 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
 
     private fun acceptSuggestion(word: String) {
         val ic = currentInputConnection ?: return
-        // Delete current partial word
         if (currentWord.isNotEmpty()) {
             ic.deleteSurroundingText(currentWord.length, 0)
         }
-        // Insert suggestion
         ic.commitText(word, 1)
-        // Add space after
         ic.commitText(" ", 1)
         lastWord = word
         currentWord.clear()
@@ -118,19 +128,12 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
 
     // ─── Whisper dictation ───
     private fun toggleRecording() {
-        if (recordingMode) {
-            stopRecording()
-        } else {
-            startRecording()
-        }
+        if (recordingMode) stopRecording() else startRecording()
     }
 
     private fun startRecording() {
-        // Check microphone permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            // IME services can't request permissions directly — open settings app
+            != PackageManager.PERMISSION_GRANTED) {
             Toast.makeText(this, "Ouvrez l'app Jefe Keyboard pour accorder le micro", Toast.LENGTH_LONG).show()
             val intent = android.content.Intent(this, SettingsActivity::class.java).apply {
                 flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
@@ -155,7 +158,6 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
             keyboardView.isRecording = true
             Toast.makeText(this, "Parlez maintenant…", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Log.e(TAG, "Recording start failed: ${e.message}", e)
             Toast.makeText(this, "Erreur micro: ${e.message}", Toast.LENGTH_LONG).show()
             recordingMode = false
             keyboardView.isRecording = false
@@ -163,14 +165,7 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
     }
 
     private fun stopRecording() {
-        try {
-            recorder?.apply {
-                stop()
-                release()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Recording stop error: ${e.message}")
-        }
+        try { recorder?.apply { stop(); release() } } catch (_: Exception) {}
         recorder = null
         recordingMode = false
         keyboardView.isRecording = false
@@ -179,18 +174,14 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         if (file != null && file.exists() && file.length() > 0) {
             Toast.makeText(this, "Transcription…", Toast.LENGTH_SHORT).show()
             launch {
-                val text = withContext(Dispatchers.IO) {
-                    transcribeAudio(file)
-                }
+                val text = withContext(Dispatchers.IO) { transcribeAudio(file) }
                 if (text != null) {
-                    // Insert transcribed text at cursor
                     currentInputConnection.commitText(text, 1)
-                    // Update word buffer for predictions
                     val words = text.trim().split(" ")
                     if (words.size > 1) {
                         lastWord = words.last().lowercase()
                         currentWord.clear()
-                    } else if (words.size == 1) {
+                    } else if (words.size == 1 && words[0].isNotEmpty()) {
                         currentWord.clear()
                         currentWord.append(words[0])
                     }
@@ -207,19 +198,15 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val url = prefs.getString("whisper_url", "") ?: return null
         if (url.isEmpty()) return null
-
         val apiKey = prefs.getString("whisper_api_key", "") ?: ""
         val model = prefs.getString("whisper_model", "whisper-1") ?: "whisper-1"
-
-        val client = WhisperClient(url, apiKey, model)
-        return client.transcribe(file, language = "fr")
+        return WhisperClient(url, apiKey, model).transcribe(file, language = "fr")
     }
 
     // ─── Translation ───
     private fun translateSelection() {
         val ic = currentInputConnection ?: return
         val selectedText = ic.getSelectedText(0)
-
         if (selectedText.isNullOrBlank()) {
             Toast.makeText(this, "Sélectionnez du texte d'abord", Toast.LENGTH_SHORT).show()
             return
@@ -227,11 +214,8 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
 
         Toast.makeText(this, "Traduction…", Toast.LENGTH_SHORT).show()
         launch {
-            val translated = withContext(Dispatchers.IO) {
-                translateText(selectedText.toString())
-            }
+            val translated = withContext(Dispatchers.IO) { translateText(selectedText.toString()) }
             if (translated != null) {
-                // Replace selected text with translation
                 ic.commitText(translated, 1)
                 Toast.makeText(this@JefeKeyboardService, "Traduit ✓", Toast.LENGTH_SHORT).show()
             } else {
@@ -244,29 +228,21 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val url = prefs.getString("translate_url", "") ?: return null
         if (url.isEmpty()) return null
-
         val apiKey = prefs.getString("translate_api_key", "") ?: ""
         val source = prefs.getString("translate_source", "auto") ?: "auto"
         val target = prefs.getString("translate_target", "fr") ?: "fr"
-
-        val client = TranslateClient(url, apiKey, source, target)
-        return client.translate(text)
+        return TranslateClient(url, apiKey, source, target).translate(text)
     }
 
     // ─── Lifecycle ───
     override fun hideWindow() {
-        if (recordingMode) {
-            stopRecording()
-        }
+        if (recordingMode) stopRecording()
         super.hideWindow()
     }
 
     override fun onDestroy() {
         if (recordingMode) {
-            try {
-                recorder?.stop()
-                recorder?.release()
-            } catch (_: Exception) {}
+            try { recorder?.stop(); recorder?.release() } catch (_: Exception) {}
         }
         super.onDestroy()
     }

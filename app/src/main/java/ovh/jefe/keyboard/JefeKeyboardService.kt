@@ -72,7 +72,7 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
             currentWord.deleteCharAt(currentWord.length - 1)
         }
         // Use deleteTextBeforeCursor for reliability
-        ic.deleteTextBeforeCursor()
+        ic.deleteSurroundingText(1, 0)
         updateSuggestions()
     }
 

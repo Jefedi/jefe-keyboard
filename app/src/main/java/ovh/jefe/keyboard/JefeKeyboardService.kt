@@ -130,9 +130,8 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            // IME services can't request permissions directly — notify user
-            Toast.makeText(this, "Accordez la permission micro à l'app Jefe Keyboard", Toast.LENGTH_LONG).show()
-            // Try to request via the settings activity
+            // IME services can't request permissions directly — open settings app
+            Toast.makeText(this, "Ouvrez l'app Jefe Keyboard pour accorder le micro", Toast.LENGTH_LONG).show()
             val intent = android.content.Intent(this, SettingsActivity::class.java).apply {
                 flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
             }

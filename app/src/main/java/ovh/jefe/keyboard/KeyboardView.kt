@@ -187,7 +187,7 @@ class KeyboardView @JvmOverloads constructor(
         // ─── Suggestion bar (3 slots) ───
         val sugW = w / 3f
         for (i in 0..2) {
-            val rect = RectF(i * sugW, 0, (i + 1) * sugW, sugH)
+            val rect = RectF(i * sugW, 0f, (i + 1) * sugW, sugH)
             sugResult.add(ComputedKey(rect, KeyDef(KeyAction.SUGGESTION), -1, i))
         }
 

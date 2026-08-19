@@ -12,9 +12,7 @@
         <EditTextPreference
             app:key="whisper_api_key"
             app:title="@string/whisper_key_title"
-            app:summary="@string/whisper_key_summary"
-            app:defaultValue=""
-            app:useSimpleSummaryProvider="true" />
+            app:defaultValue="" />
         <EditTextPreference
             app:key="whisper_model"
             app:title="@string/whisper_model_title"
@@ -32,9 +30,7 @@
         <EditTextPreference
             app:key="translate_api_key"
             app:title="@string/translate_key_title"
-            app:summary="@string/translate_key_summary"
-            app:defaultValue=""
-            app:useSimpleSummaryProvider="true" />
+            app:defaultValue="" />
         <EditTextPreference
             app:key="translate_source"
             app:title="@string/translate_source_title"

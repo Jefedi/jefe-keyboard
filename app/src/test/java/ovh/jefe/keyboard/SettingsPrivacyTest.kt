@@ -1,0 +1,114 @@
+package ovh.jefe.keyboard
+
+import android.content.pm.ApplicationInfo
+import android.os.Looper
+import android.text.InputType
+import android.text.method.PasswordTransformationMethod
+import android.view.View
+import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.TextView
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceManager
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
+import org.robolectric.shadows.ShadowToast
+
+@RunWith(RobolectricTestRunner::class)
+class SettingsPrivacyTest {
+    @Before
+    fun clearPreferences() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        PreferenceManager.getDefaultSharedPreferences(context).edit().clear().commit()
+    }
+
+    @Test
+    fun `rejects an insecure service URL with an actionable toast`() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        activity.supportFragmentManager.executePendingTransactions()
+        val fragment = requireNotNull(
+            activity.supportFragmentManager.findFragmentById(R.id.settings_container)
+                as? SettingsActivity.SettingsFragment,
+        )
+        val preference = requireNotNull(fragment.findPreference<EditTextPreference>("whisper_url"))
+
+        val accepted = preference.callChangeListener("http://voice.local:8080")
+
+        assertFalse(accepted)
+        assertEquals("Connexion non sécurisée refusée. Utilisez HTTPS.", ShadowToast.getTextOfLatestToast())
+        assertEquals("", preference.text.orEmpty())
+    }
+
+    @Test
+    fun `refreshes setup status after an accepted URL is persisted`() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        activity.supportFragmentManager.executePendingTransactions()
+        val fragment = requireNotNull(
+            activity.supportFragmentManager.findFragmentById(R.id.settings_container)
+                as? SettingsActivity.SettingsFragment,
+        )
+        val preference = requireNotNull(fragment.findPreference<EditTextPreference>("whisper_url"))
+        assertEquals(0, allText(activity.window.decorView).count { it == "✅ Configuré" })
+
+        assertTrue(preference.callChangeListener("https://voice.example.test/base/"))
+        preference.text = "https://voice.example.test/base/"
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(1, allText(activity.window.decorView).count { it == "✅ Configuré" })
+    }
+
+    @Test
+    fun `API keys use status summaries and password editors`() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        activity.supportFragmentManager.executePendingTransactions()
+        val fragment = requireNotNull(
+            activity.supportFragmentManager.findFragmentById(R.id.settings_container)
+                as? SettingsActivity.SettingsFragment,
+        )
+
+        listOf("whisper_api_key", "translate_api_key").forEach { key ->
+            val preference = requireNotNull(fragment.findPreference<EditTextPreference>(key))
+            preference.text = "secret-$key"
+            assertEquals("Configurée", preference.summary)
+            preference.text = ""
+            assertEquals("Non configurée", preference.summary)
+
+            fragment.onDisplayPreferenceDialog(preference)
+            activity.supportFragmentManager.executePendingTransactions()
+            val dialogFragment = requireNotNull(
+                activity.supportFragmentManager.findFragmentByTag(
+                    "androidx.preference.PreferenceFragment.DIALOG",
+                ) as? androidx.fragment.app.DialogFragment,
+            )
+            val editor = requireNotNull(dialogFragment.requireDialog().findViewById<EditText>(android.R.id.edit))
+
+            assertEquals(InputType.TYPE_CLASS_TEXT, editor.inputType and InputType.TYPE_MASK_CLASS)
+            assertEquals(
+                InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                editor.inputType and InputType.TYPE_MASK_VARIATION,
+            )
+            assertTrue(editor.transformationMethod is PasswordTransformationMethod)
+            dialogFragment.dismissNow()
+        }
+    }
+
+    @Test
+    fun `application backup is disabled`() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+
+        assertEquals(0, activity.applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP)
+    }
+
+    private fun allText(view: View): List<String> {
+        val ownText = if (view is TextView) listOf(view.text.toString()) else emptyList()
+        if (view !is ViewGroup) return ownText
+        return ownText + (0 until view.childCount).flatMap { allText(view.getChildAt(it)) }
+    }
+}

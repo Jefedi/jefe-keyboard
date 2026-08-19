@@ -1,6 +1,5 @@
 package ovh.jefe.keyboard
 
-import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -17,50 +16,69 @@ class TranslateClient(
     private val url: String,
     private val apiKey: String,
     private val sourceLang: String,
-    private val targetLang: String
+    private val targetLang: String,
+    private val client: OkHttpClient = defaultClient(),
 ) {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
-        .build()
+    private companion object {
+        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
 
     /**
      * Translate text.
      * @param text text to translate
-     * @return translated text, or null on error
+     * @return translated text or an actionable failure
      */
-    fun translate(text: String): String? {
-        val endpoint = url.trimEnd('/') + "/translate"
-        Log.d("TranslateClient", "Translating ${text.length} chars to $targetLang via $endpoint")
-
-        val jsonBody = JSONObject().apply {
-            put("q", text)
-            put("source", sourceLang)
-            put("target", targetLang)
-            put("format", "text")
-            if (apiKey.isNotEmpty()) {
-                put("api_key", apiKey)
-            }
-        }
-
-        val request = Request.Builder()
-            .url(endpoint)
-            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
-            .build()
-
+    fun translate(text: String): RemoteResult<String> {
         return try {
+            val baseUrl = when (val parsed = ServiceEndpoint.parse(url)) {
+                is RemoteResult.Success -> parsed.value
+                is RemoteResult.Failure -> return parsed
+            }
+            val endpoint = baseUrl.newBuilder()
+                .addPathSegments("translate")
+                .build()
+            val jsonBody = JSONObject().apply {
+                put("q", text)
+                put("source", sourceLang)
+                put("target", targetLang)
+                put("format", "text")
+                if (apiKey.isNotEmpty()) {
+                    put("api_key", apiKey)
+                }
+            }
+
+            val request = Request.Builder()
+                .url(endpoint)
+                .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.e("TranslateClient", "HTTP ${response.code}: ${response.body?.string()}")
-                    null
+                    RemoteResult.Failure(
+                        "Le serveur de traduction a répondu avec le code ${response.code}. " +
+                            "Vérifiez son adresse et sa configuration.",
+                    )
                 } else {
-                    val json = JSONObject(response.body?.string() ?: "{}")
-                    json.optString("translatedText", "").ifEmpty { null }
+                    val translatedText = JSONObject(response.body?.string().orEmpty())
+                        .optString("translatedText", "")
+                    if (translatedText.isEmpty()) {
+                        RemoteResult.Failure(
+                            "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
+                        )
+                    } else {
+                        RemoteResult.Success(translatedText)
+                    }
                 }
             }
         } catch (e: Exception) {
-            Log.e("TranslateClient", "Error: ${e.message}", e)
-            null
+            RemoteResult.Failure(
+                "Réponse du serveur de traduction invalide ou inaccessible. " +
+                    "Vérifiez l’adresse HTTPS et le réseau.",
+                e,
+            )
         }
     }
 }

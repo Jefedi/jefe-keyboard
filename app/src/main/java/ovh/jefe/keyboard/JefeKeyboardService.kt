@@ -200,7 +200,10 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         if (url.isEmpty()) return null
         val apiKey = prefs.getString("whisper_api_key", "") ?: ""
         val model = prefs.getString("whisper_model", "whisper-1") ?: "whisper-1"
-        return WhisperClient(url, apiKey, model).transcribe(file, language = "fr")
+        return when (val result = WhisperClient(url, apiKey, model).transcribe(file, language = "fr")) {
+            is RemoteResult.Success -> result.value
+            is RemoteResult.Failure -> null
+        }
     }
 
     // ─── Translation ───
@@ -231,7 +234,10 @@ class JefeKeyboardService : InputMethodService(), CoroutineScope by MainScope() 
         val apiKey = prefs.getString("translate_api_key", "") ?: ""
         val source = prefs.getString("translate_source", "auto") ?: "auto"
         val target = prefs.getString("translate_target", "fr") ?: "fr"
-        return TranslateClient(url, apiKey, source, target).translate(text)
+        return when (val result = TranslateClient(url, apiKey, source, target).translate(text)) {
+            is RemoteResult.Success -> result.value
+            is RemoteResult.Failure -> null
+        }
     }
 
     // ─── Lifecycle ───

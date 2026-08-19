@@ -10,6 +10,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
+import android.text.method.PasswordTransformationMethod
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -21,6 +23,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
+import androidx.preference.EditTextPreference
 
 /**
  * Onboarding + Settings combinés.
@@ -261,13 +264,13 @@ class SettingsActivity : AppCompatActivity() {
     private fun isWhisperConfigured(): Boolean {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val url = prefs.getString("whisper_url", "") ?: ""
-        return url.isNotEmpty()
+        return ServiceEndpoint.parse(url) is RemoteResult.Success
     }
 
     private fun isTranslateConfigured(): Boolean {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val url = prefs.getString("translate_url", "") ?: ""
-        return url.isNotEmpty()
+        return ServiceEndpoint.parse(url) is RemoteResult.Success
     }
 
     // ─── Actions ───
@@ -343,6 +346,44 @@ class SettingsActivity : AppCompatActivity() {
     class SettingsFragment : PreferenceFragmentCompat() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
+            configureUrlPreference("whisper_url")
+            configureUrlPreference("translate_url")
+            configureApiKeyPreference("whisper_api_key")
+            configureApiKeyPreference("translate_api_key")
+        }
+
+        private fun configureUrlPreference(key: String) {
+            val preference = findPreference<EditTextPreference>(key) ?: return
+            preference.onPreferenceChangeListener =
+                androidx.preference.Preference.OnPreferenceChangeListener { _, newValue ->
+                    when (val result = ServiceEndpoint.parse(newValue as? String ?: "")) {
+                        is RemoteResult.Success -> {
+                            activity?.window?.decorView?.post {
+                                (activity as? SettingsActivity)?.refreshOnboarding()
+                            }
+                            true
+                        }
+
+                        is RemoteResult.Failure -> {
+                            Toast.makeText(requireContext(), result.message, Toast.LENGTH_LONG).show()
+                            false
+                        }
+                    }
+                }
+        }
+
+        private fun configureApiKeyPreference(key: String) {
+            val preference = findPreference<EditTextPreference>(key) ?: return
+            preference.summaryProvider =
+                androidx.preference.Preference.SummaryProvider<EditTextPreference> { apiKey ->
+                    if (apiKey.text.isNullOrEmpty()) "Non configurée" else "Configurée"
+                }
+            preference.setOnBindEditTextListener { editor ->
+                editor.inputType =
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                editor.transformationMethod = PasswordTransformationMethod.getInstance()
+                editor.setSelection(editor.text.length)
+            }
         }
     }
 }

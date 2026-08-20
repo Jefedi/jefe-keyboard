@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,6 +53,91 @@ class JefeKeyboardServiceTest {
         service.onStartInputView(info, false)
 
         assertEquals(EditorInfo.IME_ACTION_PREVIOUS, root.keyboardView.enterAction)
+    }
+
+    @Test
+    fun `replacing the input root retires every action owned by the old root`() {
+        val oldConnection = EditableInputConnection(context(), "old", 3)
+        val newConnection = EditableInputConnection(context(), "fresh", 5)
+        val translationCalls = AtomicInteger()
+        val recorderCreations = AtomicInteger()
+        val service = testService(oldConnection).apply {
+            translation = {
+                translationCalls.incrementAndGet()
+                RemoteResult.Failure("indisponible")
+            }
+            recorderFactory = {
+                recorderCreations.incrementAndGet()
+                FakeAudioRecorder()
+            }
+        }
+        val oldRoot = createRootAndStart(service)
+        val oldCharacter = requireNotNull(oldRoot.keyboardView.onKeyChar)
+        val oldDelete = requireNotNull(oldRoot.keyboardView.onKeyDelete)
+        val oldEnter = requireNotNull(oldRoot.keyboardView.onKeyEnter)
+        val oldSpace = requireNotNull(oldRoot.keyboardView.onKeySpace)
+        val oldMic = requireNotNull(oldRoot.keyboardView.onMicClick)
+        val oldTranslate = requireNotNull(oldRoot.keyboardView.onTranslateClick)
+        val oldSuggestion = requireNotNull(oldRoot.railView.onSuggestionClick)
+        val oldClipboard = requireNotNull(oldRoot.railView.onClipboardTabClick)
+        val oldRetry = requireNotNull(oldRoot.railView.onTranslationRetryClick)
+        val oldClipboardPrompt = requireNotNull(oldRoot.railView.onClipboardPromptClick)
+        val oldClipboardDismiss = requireNotNull(oldRoot.railView.onClipboardPromptDismiss)
+
+        service.testConnection = newConnection
+        val newRoot = createRootAndStart(service)
+
+        fun textAfterOldAction(action: () -> Unit): String {
+            newConnection.replaceAll("fresh", 5)
+            action()
+            return newConnection.text()
+        }
+        val staleEditResults = listOf(
+            textAfterOldAction { oldCharacter("x") },
+            textAfterOldAction { oldDelete() },
+            textAfterOldAction { oldEnter() },
+            textAfterOldAction { oldSpace() },
+        )
+
+        newConnection.replaceAll("b", 1)
+        requireNotNull(newRoot.keyboardView.onKeyChar).invoke("o")
+        oldSuggestion("bon")
+        val textAfterOldSuggestion = newConnection.text()
+
+        newConnection.replaceAll("secret", 6)
+        newConnection.select(0, 6)
+        requireNotNull(newRoot.keyboardView.onTranslateClick).invoke()
+        drainMainLooper()
+        oldRetry()
+        drainMainLooper()
+        oldTranslate()
+        drainMainLooper()
+
+        grantMicrophonePermission()
+        oldMic()
+        oldClipboard()
+        oldClipboardPrompt("entry")
+        oldClipboardDismiss()
+
+        assertEquals(List(4) { "fresh" }, staleEditResults)
+        assertEquals("bo", textAfterOldSuggestion)
+        assertEquals(1, translationCalls.get())
+        assertEquals(0, recorderCreations.get())
+        assertRootCallbacksDetached(oldRoot)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `destroying the service detaches every root callback and cached edits are inert`() {
+        val connection = EditableInputConnection(context(), "fresh", 5)
+        val (service, root) = startRootService(connection)
+        val cachedCharacter = requireNotNull(root.keyboardView.onKeyChar)
+
+        service.onDestroy()
+
+        cachedCharacter("x")
+        assertEquals("fresh", connection.text())
+        assertRootCallbacksDetached(root)
     }
 
     @Test
@@ -93,6 +179,43 @@ class JefeKeyboardServiceTest {
         root.keyboardView.onKeyChar?.invoke("o")
 
         assertTrue(root.railView.suggestionViews().map { it.text.toString() }.contains("bon"))
+        service.onDestroy()
+    }
+
+    @Test
+    fun `accepted character from a retired session cannot enable the new session`() {
+        val oldConnection = SynchronousCommitCallbackInputConnection(context(), "b", 1)
+        val newConnection = EditableInputConnection(context(), "bo", 2)
+        val (service, root) = startRootService(oldConnection)
+        oldConnection.onAcceptedCommit = {
+            oldConnection.onAcceptedCommit = null
+            service.testConnection = newConnection
+            service.onStartInput(editorInfo(), false)
+        }
+
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+
+        assertEquals("bo", oldConnection.text())
+        assertEquals("bo", newConnection.text())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `accepted character from a retired root cannot update its replacement root`() {
+        val connection = SynchronousCommitCallbackInputConnection(context(), "b", 1)
+        val (service, oldRoot) = startRootService(connection)
+        lateinit var replacementRoot: KeyboardRootView
+        connection.onAcceptedCommit = {
+            connection.onAcceptedCommit = null
+            replacementRoot = service.onCreateInputView() as KeyboardRootView
+        }
+
+        requireNotNull(oldRoot.keyboardView.onKeyChar).invoke("o")
+
+        assertEquals("bo", connection.text())
+        assertRootCallbacksDetached(oldRoot)
+        assertTrue(replacementRoot.railView.suggestionViews().isEmpty())
         service.onDestroy()
     }
 
@@ -306,6 +429,27 @@ class JefeKeyboardServiceTest {
 
         assertEquals("bo", first.text())
         assertEquals("secret", second.text())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `session replacement during candidate preflight cannot edit the retired connection`() {
+        val oldConnection = SynchronousSelectedTextCallbackInputConnection(context(), "b", 1)
+        val newConnection = EditableInputConnection(context(), "new", 3)
+        val (service, root) = startRootService(oldConnection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+        oldConnection.onSelectedTextRead = {
+            oldConnection.onSelectedTextRead = null
+            service.testConnection = newConnection
+            service.onStartInput(editorInfo(), false)
+        }
+
+        candidate.performClick()
+
+        assertEquals("bo", oldConnection.text())
+        assertEquals("new", newConnection.text())
         assertTrue(root.railView.suggestionViews().isEmpty())
         service.onDestroy()
     }
@@ -1244,6 +1388,20 @@ class JefeKeyboardServiceTest {
             Thread.sleep(10)
         }
         assertTrue("Timed out waiting for observable editor state", condition())
+    }
+
+    private fun assertRootCallbacksDetached(root: KeyboardRootView) {
+        assertNull(root.keyboardView.onKeyChar)
+        assertNull(root.keyboardView.onKeyDelete)
+        assertNull(root.keyboardView.onKeyEnter)
+        assertNull(root.keyboardView.onKeySpace)
+        assertNull(root.keyboardView.onMicClick)
+        assertNull(root.keyboardView.onTranslateClick)
+        assertNull(root.railView.onSuggestionClick)
+        assertNull(root.railView.onClipboardTabClick)
+        assertNull(root.railView.onTranslationRetryClick)
+        assertNull(root.railView.onClipboardPromptClick)
+        assertNull(root.railView.onClipboardPromptDismiss)
     }
 
     private fun assertPendingTranslationCancelled(

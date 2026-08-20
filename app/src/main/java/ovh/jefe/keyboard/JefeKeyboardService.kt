@@ -74,6 +74,7 @@ open class JefeKeyboardService : InputMethodService() {
     private var translationFeedbackJob: Job? = null
     private var failedTranslationAttempt: FailedTranslationAttempt? = null
     private var expectedTranslationSelectionUpdate: ExpectedTranslationSelectionUpdate? = null
+    private var activeExpectedSelectionAction: ExpectedSelectionAction? = null
     private var translationAttemptId = 0L
 
     private var recordingMode = false
@@ -122,6 +123,13 @@ open class JefeKeyboardService : InputMethodService() {
         val owner: TranslationOwner,
         val previousSelection: EditorSelectionRange,
         val selection: EditorSelectionRange,
+    )
+
+    private data class ExpectedSelectionAction(
+        val owner: EditorOwner,
+        val previousSelection: EditorSelectionRange,
+        val selection: EditorSelectionRange,
+        var matchedRevision: Long? = null,
     )
 
     private data class ExtractedSelection(
@@ -196,8 +204,20 @@ open class JefeKeyboardService : InputMethodService() {
             previousSelection,
             selection,
         )
+        val previousRevision = externalSelectionRevision
+        val synchronousAction = activeExpectedSelectionAction?.takeIf { action ->
+            expectedSuggestion &&
+                action.owner.generation == sessionGeneration &&
+                action.owner.connection === currentInputConnection &&
+                action.owner.root === rootView &&
+                action.owner.selectionRevision == previousRevision &&
+                action.previousSelection == previousSelection &&
+                action.selection == selection
+        }
+        advanceExternalSelectionRevision()
+        synchronousAction?.matchedRevision = externalSelectionRevision
+        if (expectedSuggestion) rebaseExpectedSelectionState(previousRevision)
         if (!expectedTranslation && !expectedSuggestion) {
-            advanceExternalSelectionRevision()
             if (railInputs.translation != TranslationFeedback.Idle) cancelTranslation()
         }
         if (!expectedSuggestion) invalidateSuggestions()
@@ -400,7 +420,7 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun acceptSuggestion(root: KeyboardRootView, word: String) {
-        val owner = captureEditorOwner(root) ?: return
+        var owner = captureEditorOwner(root) ?: return
         val snapshot = suggestionSnapshot ?: return
         if (
             snapshot.generation != owner.generation ||
@@ -434,9 +454,30 @@ open class JefeKeyboardService : InputMethodService() {
             invalidateSuggestionsIfCurrent(owner)
             return
         }
-        val selectedToken = owner.connection.setSelection(tokenStart, cursor)
-        if (!isCurrentEditorOwner(owner)) return
+        val selectionAction = beginExpectedSelectionAction(
+            owner,
+            collapsedSelection,
+            tokenSelection,
+        ) ?: return
+        val selectedToken = try {
+            owner.connection.setSelection(tokenStart, cursor)
+        } finally {
+            endExpectedSelectionAction(selectionAction)
+        }
+        owner = resumeEditorOwnerAfterExpectedSelectionAction(owner, selectionAction) ?: return
         if (!selectedToken) {
+            invalidateSuggestionsIfCurrent(owner)
+            return
+        }
+        val liveSelection = currentRange(owner.connection)
+        if (!isCurrentEditorOwner(owner)) return
+        if (liveSelection != tokenSelection) {
+            invalidateSuggestionsIfCurrent(owner)
+            return
+        }
+        val liveToken = owner.connection.getSelectedText(0)?.toString()
+        if (!isCurrentEditorOwner(owner)) return
+        if (liveToken != currentWord) {
             invalidateSuggestionsIfCurrent(owner)
             return
         }
@@ -954,6 +995,70 @@ open class JefeKeyboardService : InputMethodService() {
         return matches
     }
 
+    private fun beginExpectedSelectionAction(
+        owner: EditorOwner,
+        previousSelection: EditorSelectionRange,
+        selection: EditorSelectionRange,
+    ): ExpectedSelectionAction? {
+        if (activeExpectedSelectionAction != null || !isCurrentEditorOwner(owner)) return null
+        return ExpectedSelectionAction(owner, previousSelection, selection).also { action ->
+            activeExpectedSelectionAction = action
+        }
+    }
+
+    private fun endExpectedSelectionAction(action: ExpectedSelectionAction) {
+        if (activeExpectedSelectionAction === action) activeExpectedSelectionAction = null
+    }
+
+    private fun resumeEditorOwnerAfterExpectedSelectionAction(
+        owner: EditorOwner,
+        action: ExpectedSelectionAction,
+    ): EditorOwner? {
+        if (isCurrentEditorOwner(owner)) return owner
+        val matchedRevision = action.matchedRevision ?: return null
+        if (matchedRevision != externalSelectionRevision) return null
+        return owner.copy(selectionRevision = matchedRevision).takeIf(::isCurrentEditorOwner)
+    }
+
+    private fun rebaseExpectedSelectionState(previousRevision: Long) {
+        suggestionSnapshot = suggestionSnapshot?.let { snapshot ->
+            if (
+                snapshot.generation == sessionGeneration &&
+                snapshot.connection === currentInputConnection &&
+                snapshot.root === rootView &&
+                snapshot.selectionRevision == previousRevision
+            ) {
+                snapshot.copy(selectionRevision = externalSelectionRevision)
+            } else {
+                snapshot
+            }
+        }
+        failedTranslationAttempt = failedTranslationAttempt?.let { attempt ->
+            val owner = attempt.owner
+            if (
+                owner.generation == sessionGeneration &&
+                owner.connection === currentInputConnection &&
+                owner.selectionRevision == previousRevision
+            ) {
+                attempt.copy(owner = owner.copy(selectionRevision = externalSelectionRevision))
+            } else {
+                attempt
+            }
+        }
+        expectedTranslationSelectionUpdate = expectedTranslationSelectionUpdate?.let { expected ->
+            val owner = expected.owner
+            if (
+                owner.generation == sessionGeneration &&
+                owner.connection === currentInputConnection &&
+                owner.selectionRevision == previousRevision
+            ) {
+                expected.copy(owner = owner.copy(selectionRevision = externalSelectionRevision))
+            } else {
+                expected
+            }
+        }
+    }
+
     private fun captureEditorOwner(root: KeyboardRootView): EditorOwner? {
         if (rootView !== root) return null
         val connection = currentInputConnection ?: return null
@@ -992,6 +1097,7 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun resetSession() {
         cancelTranslation()
+        activeExpectedSelectionAction = null
         advanceExternalSelectionRevision()
         sessionGeneration += 1
         sessionJob.cancel()

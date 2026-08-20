@@ -353,6 +353,61 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `synchronous expected callback cannot authorize a different live candidate selection`() {
+        val connection = SynchronousSelectionCallbackInputConnection(context(), "b here", 1)
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+        connection.onAcceptedSelection = { oldSelection, newSelection ->
+            connection.select(7)
+            service.onUpdateSelection(
+                oldSelection.start,
+                oldSelection.end,
+                newSelection.start,
+                newSelection.end,
+                -1,
+                -1,
+            )
+        }
+
+        candidate.performClick()
+
+        assertEquals("bo here", connection.text())
+        assertEquals(7, connection.selectionStart())
+        assertEquals(7, connection.selectionEnd())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `synchronous expected callback cannot authorize different live candidate text`() {
+        val connection = SynchronousSelectionCallbackInputConnection(context(), "b here", 1)
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+        connection.onAcceptedSelection = { oldSelection, newSelection ->
+            connection.replaceAll("xx here", 0)
+            connection.select(0, 2)
+            service.onUpdateSelection(
+                oldSelection.start,
+                oldSelection.end,
+                newSelection.start,
+                newSelection.end,
+                -1,
+                -1,
+            )
+        }
+
+        candidate.performClick()
+
+        assertEquals("xx here", connection.text())
+        assertEquals(0, connection.selectionStart())
+        assertEquals(2, connection.selectionEnd())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
     fun `candidate aborts when its intermediate selection exceeds the callback bound`() {
         val connection = EditableInputConnection(context(), "b", 1)
         val (service, root) = startRootService(connection)
@@ -504,6 +559,31 @@ class JefeKeyboardServiceTest {
         assertTrue(connection.selectionAttemptsAfterCallback.isEmpty())
         assertTrue(connection.commitAttemptsAfterCallback.isEmpty())
         assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `delayed expected callback during candidate preflight cannot authorize live cursor motion`() {
+        val connection = SynchronousCandidateCursorCallbackInputConnection(
+            context(),
+            "b here",
+            1,
+        )
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+        connection.onCandidateCursorRead = {
+            connection.select(7)
+            service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+        }
+
+        candidate.performClick()
+
+        assertEquals("bo here", connection.text())
+        assertEquals(7, connection.selectionStart())
+        assertEquals(7, connection.selectionEnd())
+        assertTrue(connection.selectionAttemptsAfterCallback.isEmpty())
+        assertTrue(connection.commitAttemptsAfterCallback.isEmpty())
         service.onDestroy()
     }
 
@@ -681,6 +761,37 @@ class JefeKeyboardServiceTest {
             connection.onExtractedTextRead = null
             connection.select(7, 13)
             service.onUpdateSelection(0, 6, 7, 13, -1, -1)
+        }
+
+        requireNotNull(root.keyboardView.onTranslateClick).invoke()
+        drainMainLooper()
+
+        assertTrue(remoteInputs.isEmpty())
+        assertEquals("secret public", connection.text())
+        assertEquals(7, connection.selectionStart())
+        assertEquals(13, connection.selectionEnd())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `delayed expected callback cannot disclose a selection superseded during translation snapshot`() {
+        val connection = SynchronousExtractedTextCallbackInputConnection(context(), "b", 1)
+        val remoteInputs = mutableListOf<String>()
+        val service = testService(connection).apply {
+            translation = {
+                remoteInputs += it
+                RemoteResult.Success("translated")
+            }
+        }
+        val root = createRootAndStart(service)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        connection.replaceAll("secret public", 0)
+        connection.select(0, 6)
+        connection.onExtractedTextRead = {
+            connection.onExtractedTextRead = null
+            connection.select(7, 13)
+            service.onUpdateSelection(1, 1, 2, 2, -1, -1)
         }
 
         requireNotNull(root.keyboardView.onTranslateClick).invoke()

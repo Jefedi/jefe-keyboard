@@ -67,7 +67,7 @@ class WhisperClient(
                 requestBuilder.header("Authorization", "Bearer $apiKey")
             }
 
-            client.newCall(requestBuilder.build()).awaitResponse().use { response ->
+            client.newCall(requestBuilder.build()).awaitResponse { response ->
                 if (!response.isSuccessful) {
                     val redirect = response.header("Location")
                         ?.let(response.request.url::resolve)

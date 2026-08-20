@@ -2,13 +2,18 @@ package ovh.jefe.keyboard
 
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.Call
 import okhttp3.EventListener
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 import okhttp3.mockwebserver.MockResponse
@@ -151,7 +156,7 @@ class WhisperClientTest {
     }
 
     @Test
-    fun `cancelling transcription cancels the actual stalled HTTP call`() = runBlocking {
+    fun `cancelling transcription before headers cancels the actual stalled HTTP call`() = runBlocking {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
         val cancellation = CancellationException("transcription annulée")
         val started = CountDownLatch(1)
@@ -201,4 +206,108 @@ class WhisperClientTest {
             audioFile.delete()
         }
     }
+
+    @Test
+    fun `a delayed transcription body does not block the caller dispatcher`() = runBlocking {
+        server.enqueue(delayedJsonResponse("""{"text":"Bonjour dicté"}"""))
+        val headersReceived = CountDownLatch(1)
+        val observingClient = trustedClient.newBuilder()
+            .readTimeout(2, TimeUnit.SECONDS)
+            .eventListener(object : EventListener() {
+                override fun responseHeadersEnd(call: Call, response: Response) {
+                    headersReceived.countDown()
+                }
+            })
+            .build()
+        val audioFile = Files.createTempFile("jefe-whisper", ".m4a").toFile()
+        audioFile.writeText("contenu-audio")
+        val client = WhisperClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            model = "whisper-1",
+            client = observingClient,
+        )
+        val callerDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val deferred = async(callerDispatcher) {
+            client.transcribe(audioFile, language = "fr")
+        }
+
+        try {
+            assertTrue(headersReceived.await(1, TimeUnit.SECONDS))
+            Thread.sleep(200)
+            val callerResponsive = CountDownLatch(1)
+            val probe = launch(callerDispatcher) { callerResponsive.countDown() }
+
+            assertTrue(
+                "Reading a delayed body must stay off the caller dispatcher",
+                callerResponsive.await(500, TimeUnit.MILLISECONDS),
+            )
+            probe.cancelAndJoin()
+        } finally {
+            deferred.cancelAndJoin()
+            callerDispatcher.close()
+            audioFile.delete()
+        }
+    }
+
+    @Test
+    fun `cancelling transcription after headers cancels the actual stalled body call`() = runBlocking {
+        server.enqueue(delayedJsonResponse("""{"text":"Bonjour dicté"}"""))
+        val cancellation = CancellationException("transcription annulée")
+        val headersReceived = CountDownLatch(1)
+        val failed = CountDownLatch(1)
+        val actualCall = AtomicReference<Call>()
+        val observingClient = trustedClient.newBuilder()
+            .readTimeout(2, TimeUnit.SECONDS)
+            .eventListener(object : EventListener() {
+                override fun callStart(call: Call) {
+                    actualCall.set(call)
+                }
+
+                override fun responseHeadersEnd(call: Call, response: Response) {
+                    headersReceived.countDown()
+                }
+
+                override fun callFailed(call: Call, ioe: IOException) {
+                    failed.countDown()
+                }
+            })
+            .build()
+        val audioFile = Files.createTempFile("jefe-whisper", ".m4a").toFile()
+        audioFile.writeText("contenu-audio")
+        val client = WhisperClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            model = "whisper-1",
+            client = observingClient,
+        )
+
+        try {
+            val deferred = async(Dispatchers.IO) {
+                client.transcribe(audioFile, language = "fr")
+            }
+            assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+            assertTrue(headersReceived.await(1, TimeUnit.SECONDS))
+            deferred.cancel(cancellation)
+            val thrown = try {
+                deferred.await()
+                null
+            } catch (error: CancellationException) {
+                error
+            }
+
+            assertEquals(cancellation.message, thrown?.message)
+            assertTrue(failed.await(2, TimeUnit.SECONDS))
+            assertTrue("The OkHttp Call must be marked cancelled", actualCall.get().isCanceled())
+            assertEquals(0, observingClient.dispatcher.runningCallsCount())
+        } finally {
+            audioFile.delete()
+        }
+    }
+
+    private fun delayedJsonResponse(body: String): MockResponse = MockResponse()
+        .setResponseCode(200)
+        .setHeader("Content-Type", "application/json")
+        .setBody(body)
+        .setBodyDelay(5, TimeUnit.SECONDS)
 }

@@ -2,7 +2,6 @@ package ovh.jefe.keyboard
 
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -25,26 +24,35 @@ internal fun OkHttpClient.enforceHttpsTransport(): OkHttpClient = newBuilder()
     }
     .build()
 
-@OptIn(ExperimentalCoroutinesApi::class)
-internal suspend fun Call.awaitResponse(): Response = suspendCancellableCoroutine { continuation ->
-    val terminal = AtomicBoolean(false)
-    continuation.invokeOnCancellation {
-        terminal.compareAndSet(false, true)
-        cancel()
-    }
-    enqueue(object : Callback {
-        override fun onFailure(call: Call, error: IOException) {
+internal suspend fun <T> Call.awaitResponse(transform: (Response) -> T): T =
+    suspendCancellableCoroutine { continuation ->
+        val terminal = AtomicBoolean(false)
+        continuation.invokeOnCancellation {
             if (terminal.compareAndSet(false, true)) {
-                continuation.resumeWith(Result.failure(error))
+                cancel()
             }
         }
+        enqueue(object : Callback {
+            override fun onFailure(call: Call, error: IOException) {
+                if (terminal.compareAndSet(false, true)) {
+                    continuation.resumeWith(Result.failure(error))
+                }
+            }
 
-        override fun onResponse(call: Call, response: Response) {
-            if (terminal.compareAndSet(false, true)) {
-                continuation.resume(response) { response.close() }
-            } else {
-                response.close()
+            override fun onResponse(call: Call, response: Response) {
+                if (terminal.get()) {
+                    response.close()
+                    return
+                }
+
+                val result = try {
+                    Result.success(response.use(transform))
+                } catch (error: Exception) {
+                    Result.failure(error)
+                }
+                if (terminal.compareAndSet(false, true)) {
+                    continuation.resumeWith(result)
+                }
             }
-        }
-    })
-}
+        })
+    }

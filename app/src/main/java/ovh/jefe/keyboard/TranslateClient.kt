@@ -58,7 +58,7 @@ class TranslateClient(
                 .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            client.newCall(request).awaitResponse().use { response ->
+            client.newCall(request).awaitResponse { response ->
                 if (!response.isSuccessful) {
                     val redirect = response.header("Location")
                         ?.let(response.request.url::resolve)
@@ -76,8 +76,7 @@ class TranslateClient(
                 } else {
                     val translatedText = JSONObject(response.body?.string().orEmpty())
                         .optString("translatedText", "")
-                        .trim()
-                    if (translatedText.isEmpty()) {
+                    if (translatedText.isBlank()) {
                         RemoteResult.Failure(
                             "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
                         )

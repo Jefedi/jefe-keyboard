@@ -223,6 +223,20 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `translation preserves successful leading and trailing whitespace in the editor`() {
+        val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
+        val service = testService(connection)
+        service.translation = { RemoteResult.Success(" traduction ") }
+        val view = createViewAndStart(service)
+
+        view.onTranslateClick?.invoke()
+        idleMainLooperUntil { connection.text() != "bonjour monde" }
+
+        assertEquals(" traduction  monde", connection.text())
+        service.onDestroy()
+    }
+
+    @Test
     fun `translation whitespace success is rejected without replacing the selection`() {
         val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
         val service = testService(connection)

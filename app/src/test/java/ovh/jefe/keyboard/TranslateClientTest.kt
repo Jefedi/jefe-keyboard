@@ -2,9 +2,11 @@ package ovh.jefe.keyboard
 
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import okhttp3.OkHttpClient
 import okhttp3.Call
 import okhttp3.EventListener
+import okhttp3.Response
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 import okhttp3.mockwebserver.MockResponse
@@ -24,7 +26,10 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 @RunWith(RobolectricTestRunner::class)
@@ -112,6 +117,27 @@ class TranslateClientTest {
     }
 
     @Test
+    fun `preserves leading and trailing whitespace in translated text`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"translatedText":" traduction "}"""),
+        )
+        val client = TranslateClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            sourceLang = "fr",
+            targetLang = "en",
+            client = trustedClient,
+        )
+
+        val result = runBlocking { client.translate("Bonjour") }
+
+        assertEquals(RemoteResult.Success(" traduction "), result)
+    }
+
+    @Test
     fun `rejects malformed and cleartext translation URLs without throwing`() {
         listOf("pas une URL", "http://127.0.0.1:65535/private/").forEach { url ->
             val result = runBlocking {
@@ -159,7 +185,7 @@ class TranslateClientTest {
     }
 
     @Test
-    fun `cancelling translation cancels the actual stalled HTTP call`() = runBlocking {
+    fun `cancelling translation before headers cancels the actual stalled HTTP call`() = runBlocking {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
         val cancellation = CancellationException("traduction annulée")
         val started = CountDownLatch(1)
@@ -189,6 +215,93 @@ class TranslateClientTest {
         val deferred = async(Dispatchers.IO) { client.translate("Texte privé") }
         assertTrue(started.await(1, TimeUnit.SECONDS))
         assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+        deferred.cancel(cancellation)
+        val thrown = try {
+            deferred.await()
+            null
+        } catch (error: CancellationException) {
+            error
+        }
+
+        assertEquals(cancellation.message, thrown?.message)
+        assertTrue(failed.await(2, TimeUnit.SECONDS))
+        assertTrue("The OkHttp Call must be marked cancelled", actualCall.get().isCanceled())
+        assertEquals(0, observingClient.dispatcher.runningCallsCount())
+    }
+
+    @Test
+    fun `a delayed translation body does not block the caller dispatcher`() = runBlocking {
+        server.enqueue(delayedJsonResponse("""{"translatedText":"Texte traduit"}"""))
+        val headersReceived = CountDownLatch(1)
+        val observingClient = trustedClient.newBuilder()
+            .readTimeout(2, TimeUnit.SECONDS)
+            .eventListener(object : EventListener() {
+                override fun responseHeadersEnd(call: Call, response: Response) {
+                    headersReceived.countDown()
+                }
+            })
+            .build()
+        val client = TranslateClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            sourceLang = "fr",
+            targetLang = "en",
+            client = observingClient,
+        )
+        val callerDispatcher = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val deferred = async(callerDispatcher) { client.translate("Texte privé") }
+
+        try {
+            assertTrue(headersReceived.await(1, TimeUnit.SECONDS))
+            Thread.sleep(200)
+            val callerResponsive = CountDownLatch(1)
+            val probe = launch(callerDispatcher) { callerResponsive.countDown() }
+
+            assertTrue(
+                "Reading a delayed body must stay off the caller dispatcher",
+                callerResponsive.await(500, TimeUnit.MILLISECONDS),
+            )
+            probe.cancelAndJoin()
+        } finally {
+            deferred.cancelAndJoin()
+            callerDispatcher.close()
+        }
+    }
+
+    @Test
+    fun `cancelling translation after headers cancels the actual stalled body call`() = runBlocking {
+        server.enqueue(delayedJsonResponse("""{"translatedText":"Texte traduit"}"""))
+        val cancellation = CancellationException("traduction annulée")
+        val headersReceived = CountDownLatch(1)
+        val failed = CountDownLatch(1)
+        val actualCall = AtomicReference<Call>()
+        val observingClient = trustedClient.newBuilder()
+            .readTimeout(2, TimeUnit.SECONDS)
+            .eventListener(object : EventListener() {
+                override fun callStart(call: Call) {
+                    actualCall.set(call)
+                }
+
+                override fun responseHeadersEnd(call: Call, response: Response) {
+                    headersReceived.countDown()
+                }
+
+                override fun callFailed(call: Call, ioe: IOException) {
+                    failed.countDown()
+                }
+            })
+            .build()
+        val client = TranslateClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            sourceLang = "fr",
+            targetLang = "en",
+            client = observingClient,
+        )
+
+        val deferred = async(Dispatchers.IO) { client.translate("Texte privé") }
+        assertNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+        assertTrue(headersReceived.await(1, TimeUnit.SECONDS))
         deferred.cancel(cancellation)
         val thrown = try {
             deferred.await()
@@ -253,4 +366,10 @@ class TranslateClientTest {
         assertTrue(result is RemoteResult.Failure)
         assertTrue((result as RemoteResult.Failure).message.contains("vide", ignoreCase = true))
     }
+
+    private fun delayedJsonResponse(body: String): MockResponse = MockResponse()
+        .setResponseCode(200)
+        .setHeader("Content-Type", "application/json")
+        .setBody(body)
+        .setBodyDelay(5, TimeUnit.SECONDS)
 }

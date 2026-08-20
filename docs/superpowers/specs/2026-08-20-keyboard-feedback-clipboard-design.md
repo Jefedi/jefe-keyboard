@@ -2,7 +2,7 @@
 
 Date : 2026-08-20
 
-Statut : conception approuvée en conversation, en attente de revue du document
+Statut : conception validée par l’utilisateur le 2026-08-20 ; prête pour exécution des plans
 
 Branche de conception : `codex/keyboard-clipboard`
 
@@ -57,7 +57,7 @@ Android recommande Room pour les données structurées et Android Keystore pour 
 - L’utilisateur active ensuite explicitement l’historique.
 - Juste après cette activation, le clip système courant est importé une fois s’il respecte la policy ; aucune capture antérieure n’est reconstruite.
 - L’écoute utilise le cycle de vie normal de l’IME, sans service permanent et sans notification persistante.
-- Si Android a arrêté le processus, le presse-papiers système courant est relu au prochain démarrage. Les copies intermédiaires éventuellement survenues pendant l’arrêt ne peuvent pas être récupérées.
+- Si Android a arrêté le processus, le presse-papiers système courant est relu au prochain démarrage, sauf après `Tout effacer` ou une réinitialisation confirmée : dans ce cas le clip courant reste supprimé logiquement jusqu’au prochain vrai changement du presse-papiers. Les copies intermédiaires éventuellement survenues pendant l’arrêt ne peuvent pas être récupérées.
 - Tant que le processus vit, chaque changement est placé dans une file FIFO d’ingestion ; une copie lente n’est pas abandonnée parce qu’une nouvelle arrive.
 - Désactiver l’historique demande confirmation puis efface la base, les fichiers, les miniatures, les autorisations temporaires et les caches mémoire.
 - Sur Android 7 à 9, ce consentement avertit aussi que le système permet encore à d’autres applications en arrière-plan de lire le presse-papiers avant sa copie dans l’historique chiffré.
@@ -171,21 +171,21 @@ Interface de stockage indépendante de Room. Elle expose des flux d’état et d
 Implémentation recommandée :
 
 - Room conserve l’identifiant, la date, le type générique, `storedByteSize`, l’état épinglé, le marqueur sensible et l’empreinte HMAC ;
-- Room conserve aussi un état technique `STAGING`, `READY` ou `DELETING` pour permettre la reprise après interruption ;
+- Room conserve aussi les états techniques `STAGING`, `READY`, `PROMOTING`, `REVOKING` et `DELETING` pour permettre la reprise après interruption ;
 - les contenus textuels et petits manifests sont des BLOB chiffrés ;
 - les médias et fichiers sont stockés sous des noms aléatoires dans un répertoire interne dédié, toujours chiffrés ;
 - Room protège les transitions de métadonnées par transaction, tandis que les fichiers suivent un protocole en deux phases avec renommage dans le même répertoire ;
-- une entrée n’est observable qu’en état `READY` et la réconciliation finit ou annule les états intermédiaires ;
+- une entrée n’est observable qu’en état `READY` ; `STAGING`, `PROMOTING`, `REVOKING` et `DELETING` sont internes et la réconciliation finit ou annule ces transitions ;
 - les opérations disque s’exécutent hors du thread principal.
 
 #### `ClipboardHistoryController`
 
 Orchestre gateway, policy, repository et cycle de vie IME :
 
-- place les instantanés de copie dans une file FIFO sérialisée de 32 événements, distincte de l’état visuel ;
+- place les instantanés de copie dans une FIFO sérialisée limitée à 32 travaux au total, travail actif compris, distincte de l’état visuel ;
 - une file saturée refuse explicitement le nouvel instantané et affiche une erreur sûre, sans perte silencieuse ;
 - utilise génération/version uniquement pour ignorer les résultats UI ou de session obsolètes, jamais pour jeter une ingestion déjà acceptée ;
-- annule une ingestion lorsque le service est détruit ;
+- appartient au composant applicatif unique : la destruction/recréation du service IME ne perd pas une ingestion acceptée ; seules une barrière d’effacement/désactivation, la mort du processus ou le shutdown de test annulent la FIFO ;
 - expose un état `Disabled`, `Loading`, `Ready`, `Empty` ou `Error` ;
 - publie la proposition de collage temporaire ;
 - ne dépend d’aucun client réseau.
@@ -195,11 +195,11 @@ Orchestre gateway, policy, repository et cycle de vie IME :
 Fournisseur non exporté globalement, avec `grantUriPermissions=true` :
 
 - reçoit un jeton aléatoire temporaire lié à une entrée et au type MIME ;
-- lie aussi ce jeton à la session d’entrée et à l’UID de l’application destinataire ;
+- lie aussi ce jeton à la session d’entrée et à l’UID non usurpable fourni par `InputBinding` pour l’application destinataire, puis vérifie que le package éditeur correspond à ce même UID ;
 - ouvre un pipe en lecture seule ;
 - déchiffre en flux, sans fichier clair temporaire ;
-- autorise au plus trois ouvertures par le bon UID pendant une fenêtre de 60 secondes afin de tolérer lecture de métadonnées puis lecture réelle ;
-- expire et révoque le jeton dès la première des conditions suivantes : fenêtre écoulée, session changée, entrée supprimée ou trois ouvertures consommées ;
+- autorise au plus trois ouvertures par le bon UID pendant une fenêtre de 60 secondes ; après la troisième autorisation, aucune nouvelle ouverture ni metadata n’est acceptée, mais cette troisième lecture et les précédentes peuvent finir ;
+- annule et ferme les lectures actives dès la première des conditions suivantes : fenêtre écoulée, session changée, entrée supprimée ou révocation explicite ;
 - refuse un jeton inconnu, expiré, supprimé ou d’un MIME différent.
 
 #### `KeyboardRootView`
@@ -225,9 +225,9 @@ La mosaïque utilise des vues Android standards recyclées pour le défilement, 
 - `isSensitive` ;
 - `storedByteSize` ;
 - `fingerprintHmac` ;
-- `storageState` (`STAGING`, `READY`, `DELETING`) ;
+- `storageState` (`STAGING`, `READY`, `PROMOTING`, `REVOKING`, `DELETING`) ;
 - `encryptedManifest` ;
-- référence optionnelle vers un ou plusieurs fichiers chiffrés.
+- référence optionnelle vers un conteneur chiffré immuable par entrée, contenant des frames authentifiées distinctes.
 
 Le manifest chiffré contient les MIME, replis texte, noms, ordre des éléments et informations nécessaires au collage. Aucune valeur utilisateur n’est stockée dans une colonne indexable en clair. L’empreinte porte sur le type, les MIME, l’ordre et les octets exacts du payload, mais pas sur date, épinglage ou sensibilité ; deux copies identiques peuvent ainsi fusionner puis appliquer la règle de sensibilité monotone sans modifier le contenu collé.
 
@@ -236,22 +236,26 @@ Le manifest chiffré contient les MIME, replis texte, noms, ordre des éléments
 1. Le listener signale un changement.
 2. Le gateway prend immédiatement un instantané du clip courant dans un bloc défensif et le place dans la file FIFO.
 3. La policy détermine type, sensibilité et limites.
-4. Les URI sont ouvertes dès que possible, lues une seule fois et copiées en flux vers un fichier chiffré temporaire interne ; une révocation de permission produit un échec sûr.
+4. Les URI sont ouvertes dès que possible, lues une seule fois et copiées en flux dans le conteneur chiffré préalloué de l’entrée ; une révocation de permission produit un échec sûr.
 5. Le manifest est chiffré et son empreinte HMAC calculée.
 6. Le repository crée l’état `STAGING`, finalise les fichiers par renommage local, passe l’entrée à `READY`, puis purge les plus anciens non épinglés. Un crash entre ces étapes est réparé au démarrage sans exposer d’entrée incomplète.
-7. Le contrôleur publie la nouvelle liste et une proposition de collage pendant 20 secondes.
+7. Le contrôleur publie la nouvelle liste et une proposition de collage pendant 20 secondes réellement visibles.
 8. Toute annulation ou erreur supprime les fragments temporaires.
+
+Le bouton `Tout effacer` écrit d’abord un état durable `CLEARING_ENABLED`, pose une barrière sur l’ingestion, retire temporairement l’écoute, annule et joint le travail actif ainsi que la file déjà acceptée, persiste un marqueur anti-réimport, purge, puis revient à `ENABLED` avec une file vide. Un crash reprend ce clear avant toute écoute. Le marqueur survit à un redémarrage et n’est retiré que par le prochain vrai callback de changement ; ainsi, aucune copie antérieure à la confirmation ne peut réapparaître après l’effacement.
 
 ### 5.4 Flux de collage
 
 Pour le texte et les liens :
 
-- déchiffrement en mémoire ;
+- calcul de la taille UTF-8 depuis le manifest authentifié ;
 - vérification de la connexion et de la session courantes ;
-- `commitText` unique ;
+- jusqu’à 128 Kio UTF-8, déchiffrement borné en mémoire puis `commitText` unique ;
+- au-delà, transfert exact par URI temporaire `text/plain` et un unique `commitContent` si l’éditeur annonce ce MIME ;
+- sinon refus avant mutation avec `Cette application ne peut pas recevoir ce texte volumineux` ;
 - en cas de retour `false`, Jefe Keyboard arrête l’action et ne tente aucune seconde mutation.
 
-Un lien est collé comme sa chaîne exacte, sans résolution réseau. Pour le HTML, le clavier propose le type `text/html` par `commitContent` uniquement si l’éditeur l’annonce ; sinon il colle le repli texte exact avec un unique `commitText`. Un groupe composé seulement de texte, liens et HTML utilise les replis textuels pour `Coller tout`.
+Cette borne directe évite de dépasser le tampon Binder partagé d’Android ; elle ne réduit pas la limite de sauvegarde de 25 Mo définie ici en octets binaires. Un lien est collé comme sa chaîne exacte, sans résolution réseau. Pour le HTML, le clavier propose le type `text/html` par `commitContent` uniquement si l’éditeur l’annonce ; sinon son repli texte exact suit la même règle 128 Kio/`text/plain`. Le refus d’un `commitContent` révoque immédiatement l’URI et ne déclenche aucun second essai.
 
 Pour un contenu riche :
 
@@ -261,7 +265,7 @@ Pour un contenu riche :
 - révocation et nettoyage au changement de session ou à expiration ;
 - si l’éditeur refuse le type, aucune mutation et message `Cette application n’accepte pas ce contenu`.
 
-Android ne fournit pas d’opération IME atomique pour plusieurs contenus riches. Un groupe ouvre donc une feuille ordonnée dans laquelle chaque élément peut être collé séparément. Pour un groupe entièrement textuel, l’action explicite `Coller tout` assemble les éléments avec des sauts de ligne annoncés dans l’interface et effectue un unique `commitText`. L’action `Coller tout` n’est pas proposée pour plusieurs fichiers ou médias : tous restent sauvegardés et collables individuellement, sans prétendre pouvoir annuler un premier collage accepté si un second était refusé.
+Android ne fournit pas d’opération IME atomique pour plusieurs contenus riches. Un groupe ouvre donc une feuille ordonnée dans laquelle chaque élément peut être collé séparément. Pour un groupe entièrement textuel, l’action explicite `Coller tout` assemble les éléments avec des sauts de ligne annoncés dans l’interface : un unique `commitText` sous 128 Kio UTF-8, ou un unique payload provider `text/plain` diffusé en flux au-delà si l’éditeur l’accepte. Sans compatibilité `text/plain`, l’action échoue avant mutation avec le message de texte volumineux. L’action `Coller tout` n’est pas proposée pour plusieurs fichiers ou médias : tous restent sauvegardés et collables individuellement, sans prétendre pouvoir annuler un premier collage accepté si un second était refusé.
 
 La prévalidation garantit que Jefe Keyboard n’appelle pas l’éditeur pour un MIME annoncé incompatible. Une `InputConnection` appartient toutefois à l’application cible : si une application défectueuse modifie son texte puis retourne `false`, Android n’offre aucun rollback au clavier. Les tests vérifient donc l’absence de seconde mutation après refus et non une atomicité que la plateforme ne garantit pas.
 
@@ -301,7 +305,7 @@ Après une ingestion réussie, le rail affiche pendant 20 secondes :
 - vidéo : `Coller · <nom sûr ou Vidéo copiée> · Vidéo` ;
 - document ou fichier : `Coller · <nom sûr tronqué> · <PDF, Document ou Fichier>` ;
 - groupe : `Coller · <nombre> éléments · Groupe` ;
-- sensible : `Coller · Contenu sensible ••••••`.
+- sensible : `Coller · Contenu sensible •••••• · Texte` (ou le type générique sûr correspondant).
 
 La proposition disparaît après collage, frappe, fermeture, changement de session, expiration ou action de fermeture. Elle n’efface pas l’entrée de l’historique. Les 20 secondes comptent uniquement lorsque le clavier est visible et que `ClipboardPrompt` est réellement l’état prioritaire du rail ; une traduction met le compteur en pause, puis le prompt reprend avec le temps restant. Une nouvelle copie remplace le prompt courant et repart de 20 secondes, sans supprimer aucune entrée. Un texte long est ellipsé visuellement ; l’action `Coller` et le type restent toujours visibles. Son libellé accessible reste borné et le contenu complet n’est jamais injecté dans une description d’accessibilité.
 
@@ -429,6 +433,7 @@ Toutes les erreurs sont typées et ne contiennent jamais le payload utilisateur.
 - trop d’items ou trop de copies simultanées : `Contenu non enregistré : presse-papiers saturé` ;
 - fournisseur trop lent : `Contenu non enregistré : délai dépassé` ;
 - format de collage refusé : `Cette application n’accepte pas ce contenu` ;
+- gros texte refusé par l’éditeur : `Cette application ne peut pas recevoir ce texte volumineux`, avant toute mutation ;
 - base momentanément indisponible : état réessayable sans bloquer la saisie ;
 - entrée corrompue : isolée et marquée indisponible, sans crash ni déchiffrement partiel ;
 - clé Keystore perdue ou invalidée : état `Historique protégé inaccessible` avec action explicite de réinitialisation ;
@@ -444,6 +449,7 @@ Une nouvelle catégorie `Presse-papiers` expose :
 - action `Ouvrir l’historique` ;
 - action `Tout effacer` avec confirmation ;
 - action `Désactiver et effacer` avec confirmation ;
+- action `Réinitialiser l’historique protégé`, visible uniquement si la clé est inaccessible et toujours confirmée ;
 - compteur d’éléments et taille actuelle sans révéler de contenu.
 
 Les quotas validés ne sont pas configurables dans la première version afin d’éviter des combinaisons non testées et une interface de réglages inutilement complexe.
@@ -483,14 +489,14 @@ Le développement suivra RED → GREEN → REFACTOR pour chaque tranche.
 ### 11.4 Service et Android
 
 - listener enregistré seulement après consentement ;
-- relance et récupération du primary clip ;
+- relance et récupération du primary clip, sauf marqueur durable après clear/reset jusqu’à une nouvelle copie ;
 - exception `ClipboardManager`/`ContentResolver` absorbée ;
 - deux copies rapides dont un média lent sont ingérées dans l’ordre sans abandon par génération ;
 - saturation de file et timeout fournisseur produisent un échec visible sans fragment résiduel ;
-- collage texte accepté/refusé ;
-- collage lien exact, HTML riche avec repli, groupe textuel en un commit et groupe riche item par item ;
+- collage texte accepté/refusé, frontière directe 128 Kio, transfert `text/plain` volumineux et refus précoce si l’éditeur ne le supporte pas ;
+- collage lien exact, HTML riche avec repli, groupe textuel en un commit direct ou provider et groupe riche item par item ;
 - collage riche MIME compatible/incompatible, sans seconde mutation après un refus ;
-- grant provider temporaire, mauvais UID/MIME/session refusé, maximum d’ouvertures, expiration et suppression ;
+- grant provider temporaire testé depuis un second APK/UID, mauvais UID/MIME/session refusé, troisième lecture complète, quatrième refusée, expiration et suppression ;
 - changement de session pendant ingestion ou collage ;
 - champ mot de passe ou privé : historique disponible, entrées sensibles masquées, suggestions/traduction/dictée distante désactivées ;
 - collage sensible : traduction bloquée pour la session et comparaison HMAC exacte après relance ;
@@ -533,7 +539,7 @@ La fonctionnalité est terminée lorsque :
 6. la proposition de collage apparaît 20 secondes avec début/type approprié ;
 7. les quotas, épinglés, doublons, recherche, suppression et effacement respectent les règles validées ;
 8. aucun contenu ne fuit vers logs, sauvegardes, recherche sensible ou réseau automatique ;
-9. chaque type possède un chemin de collage défini ; les incompatibilités connues échouent avant appel éditeur, un refus arrête toute mutation suivante et aucun collage multi-fichier faussement atomique n’est proposé ;
+9. chaque type possède un chemin de collage défini ; les gros textes n’empruntent jamais une transaction Binder risquée, les incompatibilités connues échouent avant appel éditeur, un refus arrête toute mutation suivante et aucun collage multi-fichier faussement atomique n’est proposé ;
 10. les thèmes clair/sombre suivent Android et passent les exigences d’accessibilité ;
 11. tous les tests, lint et assemblage APK réussissent.
 

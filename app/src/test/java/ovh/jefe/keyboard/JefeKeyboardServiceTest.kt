@@ -8,6 +8,8 @@ import android.text.SpannableStringBuilder
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedText
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -23,6 +25,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
 class JefeKeyboardServiceTest {
@@ -77,6 +80,51 @@ class JefeKeyboardServiceTest {
 
         assertEquals("bon ", connection.text())
         service.onDestroy()
+    }
+
+    @Test
+    fun `candidate commit failure leaves the original token intact with one atomic replacement`() {
+        val connection = RejectingCommitInputConnection(context(), "bo", 2)
+        val (service, view) = startService(connection)
+        assertTrue(view.suggestions.contains("bon"))
+
+        view.onSuggestionClick?.invoke("bon")
+
+        assertEquals("bo", connection.text())
+        assertEquals(listOf("bon "), connection.commitAttempts)
+        assertEquals(connection.selectionStart(), connection.selectionEnd())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `candidate does not commit when editor rejects selecting the live token`() {
+        val connection = RejectingSelectionInputConnection(context(), "bo", 2)
+        val (service, view) = startService(connection)
+        assertTrue(view.suggestions.contains("bon"))
+
+        view.onSuggestionClick?.invoke("bon")
+
+        assertEquals("bo", connection.text())
+        assertTrue(connection.commitAttempts.isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `candidate fails closed when extracted cursor provenance is unavailable or invalid`() {
+        listOf(ExtractedTextMode.NULL, ExtractedTextMode.INVALID_SELECTION).forEach { mode ->
+            val connection = EditableInputConnection(
+                context(),
+                "bo",
+                2,
+                extractedTextMode = mode,
+            )
+            val (service, view) = startService(connection)
+
+            view.onSuggestionClick?.invoke("bon")
+
+            assertEquals("bo", connection.text())
+            service.onDestroy()
+        }
     }
 
     @Test
@@ -173,6 +221,61 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `translation rejects the same selected text at a different absolute offset`() {
+        val connection = EditableInputConnection(
+            context = context(),
+            text = "same|same",
+            selectionStart = 0,
+            selectionEnd = 4,
+            documentStartOffset = 400,
+            fixedTextBeforeCursor = "identical context before",
+            fixedTextAfterCursor = "identical context after",
+        )
+        val delayed = DelayedRemoteResult("translated")
+        val service = testService(connection)
+        service.translation = delayed::complete
+        val view = createViewAndStart(service)
+
+        view.onTranslateClick?.invoke()
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+        connection.select(5, 9)
+        service.onUpdateSelection(0, 4, 5, 9, -1, -1)
+        delayed.release.countDown()
+        assertTrue(delayed.returned.await(5, TimeUnit.SECONDS))
+        drainMainLooper()
+
+        assertEquals("same|same", connection.text())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation fails closed when extracted selection provenance is unavailable or invalid`() {
+        listOf(ExtractedTextMode.NULL, ExtractedTextMode.INVALID_SELECTION).forEach { mode ->
+            val connection = EditableInputConnection(
+                context(),
+                "bonjour",
+                0,
+                7,
+                extractedTextMode = mode,
+            )
+            val translationCalls = AtomicInteger()
+            val service = testService(connection)
+            service.translation = {
+                translationCalls.incrementAndGet()
+                RemoteResult.Success("hello")
+            }
+            val view = createViewAndStart(service)
+
+            view.onTranslateClick?.invoke()
+            drainMainLooper()
+
+            assertEquals("bonjour", connection.text())
+            assertEquals(0, translationCalls.get())
+            service.onDestroy()
+        }
+    }
+
+    @Test
     fun `new session invalidates a delayed translation result`() {
         val first = EditableInputConnection(context(), "bonjour", 0, 7)
         val second = EditableInputConnection(context(), "privé", 5)
@@ -236,6 +339,32 @@ class JefeKeyboardServiceTest {
         assertEquals(1, recorder.releaseCount)
         assertNotNull(recorder.outputFile)
         assertFalse(recorder.outputFile!!.exists())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `recorder factory failure leaves clean UI deletes temp audio and shows an actionable error`() {
+        val connection = EditableInputConnection(context(), "", 0)
+        val service = testService(connection)
+        service.recorderFactory = { error("factory failed") }
+        val view = createViewAndStart(service)
+        grantMicrophonePermission()
+        val existingAudio = service.cacheDir.listFiles()
+            .orEmpty()
+            .filter { it.name.startsWith("dictation_") }
+            .map(File::getName)
+            .toSet()
+
+        view.onMicClick?.invoke()
+
+        val remainingAudio = service.cacheDir.listFiles()
+            .orEmpty()
+            .filter { it.name.startsWith("dictation_") }
+            .map(File::getName)
+            .toSet()
+        assertFalse(view.isRecording)
+        assertEquals(existingAudio, remainingAudio)
+        assertTrue(ShadowToast.getTextOfLatestToast().contains("Erreur micro"))
         service.onDestroy()
     }
 
@@ -371,11 +500,21 @@ internal class TestJefeKeyboardService : JefeKeyboardService() {
     }
 }
 
-private class EditableInputConnection(
+private enum class ExtractedTextMode {
+    VALID,
+    NULL,
+    INVALID_SELECTION,
+}
+
+private open class EditableInputConnection(
     context: Context,
     text: String,
     selectionStart: Int,
     selectionEnd: Int = selectionStart,
+    private val documentStartOffset: Int = 0,
+    private val extractedTextMode: ExtractedTextMode = ExtractedTextMode.VALID,
+    private val fixedTextBeforeCursor: String? = null,
+    private val fixedTextAfterCursor: String? = null,
 ) : BaseInputConnection(View(context), true) {
     private val content = SpannableStringBuilder(text).apply {
         Selection.setSelection(this, selectionStart, selectionEnd)
@@ -383,6 +522,42 @@ private class EditableInputConnection(
     val editorActions = mutableListOf<Int>()
 
     override fun getEditable(): Editable = content
+
+    override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
+        if (extractedTextMode == ExtractedTextMode.NULL) return null
+        val start = Selection.getSelectionStart(content)
+        val end = Selection.getSelectionEnd(content)
+        return ExtractedText().apply {
+            text = content.toString()
+            startOffset = documentStartOffset
+            selectionStart = if (extractedTextMode == ExtractedTextMode.INVALID_SELECTION) {
+                content.length + 1
+            } else {
+                start
+            }
+            selectionEnd = if (extractedTextMode == ExtractedTextMode.INVALID_SELECTION) {
+                content.length + 1
+            } else {
+                end
+            }
+        }
+    }
+
+    override fun getTextBeforeCursor(length: Int, flags: Int): CharSequence? {
+        return fixedTextBeforeCursor ?: super.getTextBeforeCursor(length, flags)
+    }
+
+    override fun getTextAfterCursor(length: Int, flags: Int): CharSequence? {
+        return fixedTextAfterCursor ?: super.getTextAfterCursor(length, flags)
+    }
+
+    override fun setSelection(start: Int, end: Int): Boolean {
+        val localStart = start - documentStartOffset
+        val localEnd = end - documentStartOffset
+        if (localStart !in 0..content.length || localEnd !in 0..content.length) return false
+        Selection.setSelection(content, localStart, localEnd)
+        return true
+    }
 
     override fun performEditorAction(editorAction: Int): Boolean {
         editorActions += editorAction
@@ -399,6 +574,38 @@ private class EditableInputConnection(
     }
 
     fun text(): String = content.toString()
+
+    fun selectionStart(): Int = Selection.getSelectionStart(content)
+
+    fun selectionEnd(): Int = Selection.getSelectionEnd(content)
+}
+
+private class RejectingCommitInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+) : EditableInputConnection(context, text, selectionStart) {
+    val commitAttempts = mutableListOf<String>()
+
+    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        commitAttempts += text?.toString().orEmpty()
+        return false
+    }
+}
+
+private class RejectingSelectionInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+) : EditableInputConnection(context, text, selectionStart) {
+    val commitAttempts = mutableListOf<String>()
+
+    override fun setSelection(start: Int, end: Int): Boolean = false
+
+    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        commitAttempts += text?.toString().orEmpty()
+        return false
+    }
 }
 
 private class FakeAudioRecorder(

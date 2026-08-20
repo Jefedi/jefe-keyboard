@@ -7,6 +7,7 @@ import android.inputmethodservice.InputMethodService
 import android.media.MediaRecorder
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -72,13 +73,24 @@ open class JefeKeyboardService : InputMethodService() {
         val generation: Long,
         val connection: InputConnection,
         val textBeforeCursor: String,
+        val absoluteCursor: Int,
         val suggestions: List<String>,
     )
 
     private data class SelectionSnapshot(
         val selectedText: String,
+        val absoluteSelectionStart: Int,
+        val absoluteSelectionEnd: Int,
         val textBeforeSelection: String,
         val textAfterSelection: String,
+    )
+
+    private data class ExtractedSelection(
+        val text: String,
+        val relativeSelectionStart: Int,
+        val relativeSelectionEnd: Int,
+        val absoluteSelectionStart: Int,
+        val absoluteSelectionEnd: Int,
     )
 
     override fun onCreateInputView(): View {
@@ -195,18 +207,15 @@ open class JefeKeyboardService : InputMethodService() {
         if (textBeforeCursor != snapshot.textBeforeCursor) return
 
         val currentWord = TextContextParser.parse(textBeforeCursor).currentWord
-        connection.beginBatchEdit()
-        try {
-            if (
-                currentWord.isNotEmpty() &&
-                !connection.deleteSurroundingText(currentWord.length, 0)
-            ) {
-                return
-            }
-            connection.commitText(word, 1)
-            connection.commitText(" ", 1)
-        } finally {
-            connection.endBatchEdit()
+        val cursor = captureCandidateCursor(connection, currentWord) ?: return
+        if (cursor != snapshot.absoluteCursor) return
+        val tokenStart = cursor - currentWord.length
+        if (tokenStart < 0 || !connection.setSelection(tokenStart, cursor)) return
+
+        if (!connection.commitText("$word ", 1)) {
+            restoreCollapsedSelection(connection, cursor, tokenStart)
+            updateSuggestions()
+            return
         }
         updateSuggestions()
     }
@@ -225,12 +234,19 @@ open class JefeKeyboardService : InputMethodService() {
             .orEmpty()
         val context = TextContextParser.parse(textBeforeCursor)
         val suggestions = predictor.suggest(context.currentWord, context.lastWord)
-        suggestionSnapshot = if (suggestions.isEmpty()) {
+        val absoluteCursor = captureCandidateCursor(connection, context.currentWord)
+        suggestionSnapshot = if (suggestions.isEmpty() || absoluteCursor == null) {
             null
         } else {
-            SuggestionSnapshot(sessionGeneration, connection, textBeforeCursor, suggestions)
+            SuggestionSnapshot(
+                sessionGeneration,
+                connection,
+                textBeforeCursor,
+                absoluteCursor,
+                suggestions,
+            )
         }
-        view.suggestions = suggestions
+        view.suggestions = if (suggestionSnapshot == null) emptyList() else suggestions
     }
 
     private fun toggleRecording() {
@@ -258,13 +274,15 @@ open class JefeKeyboardService : InputMethodService() {
         }
 
         val file = File(cacheDir, "dictation_${System.currentTimeMillis()}.m4a")
-        val nextRecorder = createAudioRecorder()
-        recorder = nextRecorder
-        audioFile = file
+        var nextRecorder: AudioRecorder? = null
         var started = false
         var failure: Exception? = null
         try {
-            nextRecorder.prepareAndStart(file)
+            val createdRecorder = createAudioRecorder()
+            nextRecorder = createdRecorder
+            recorder = createdRecorder
+            audioFile = file
+            createdRecorder.prepareAndStart(file)
             started = true
             recordingMode = true
             keyboardView?.isRecording = true
@@ -272,7 +290,7 @@ open class JefeKeyboardService : InputMethodService() {
             failure = error
         } finally {
             if (!started) {
-                releaseRecorder(nextRecorder)
+                nextRecorder?.let(::releaseRecorder)
                 recorder = null
                 audioFile = null
                 recordingMode = false
@@ -373,9 +391,18 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun translateSelection() {
         val connection = currentInputConnection ?: return
-        val selection = captureSelection(connection)
-        if (selection == null || selection.selectedText.isBlank()) {
+        val selectedText = connection.getSelectedText(0)?.toString()
+        if (selectedText.isNullOrBlank()) {
             Toast.makeText(this, "Sélectionnez du texte d'abord", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val selection = captureSelection(connection, selectedText)
+        if (selection == null) {
+            Toast.makeText(
+                this,
+                "Impossible de vérifier cette sélection dans l'éditeur.",
+                Toast.LENGTH_LONG,
+            ).show()
             return
         }
 
@@ -385,7 +412,7 @@ open class JefeKeyboardService : InputMethodService() {
             val result = withContext(Dispatchers.IO) { translateText(selection.selectedText) }
             if (
                 !isCurrentSession(generation, connection) ||
-                captureSelection(connection) != selection
+                captureSelection(connection, connection.getSelectedText(0)?.toString()) != selection
             ) {
                 return@launch
             }
@@ -416,10 +443,25 @@ open class JefeKeyboardService : InputMethodService() {
         return TranslateClient(url, apiKey, source, target).translate(text)
     }
 
-    private fun captureSelection(connection: InputConnection): SelectionSnapshot? {
-        val selectedText = connection.getSelectedText(0)?.toString() ?: return null
+    private fun captureSelection(
+        connection: InputConnection,
+        selectedText: String?,
+    ): SelectionSnapshot? {
+        if (selectedText == null) return null
+        val extracted = captureExtractedSelection(connection) ?: return null
+        val relativeStart = minOf(
+            extracted.relativeSelectionStart,
+            extracted.relativeSelectionEnd,
+        )
+        val relativeEnd = maxOf(
+            extracted.relativeSelectionStart,
+            extracted.relativeSelectionEnd,
+        )
+        if (extracted.text.substring(relativeStart, relativeEnd) != selectedText) return null
         return SelectionSnapshot(
             selectedText = selectedText,
+            absoluteSelectionStart = extracted.absoluteSelectionStart,
+            absoluteSelectionEnd = extracted.absoluteSelectionEnd,
             textBeforeSelection = connection.getTextBeforeCursor(MAX_TEXT_CONTEXT, 0)
                 ?.toString()
                 .orEmpty(),
@@ -427,6 +469,48 @@ open class JefeKeyboardService : InputMethodService() {
                 ?.toString()
                 .orEmpty(),
         )
+    }
+
+    private fun captureCandidateCursor(connection: InputConnection, currentWord: String): Int? {
+        val extracted = captureExtractedSelection(connection) ?: return null
+        if (extracted.absoluteSelectionStart != extracted.absoluteSelectionEnd) return null
+        val relativeCursor = extracted.relativeSelectionStart
+        val relativeTokenStart = relativeCursor - currentWord.length
+        if (relativeTokenStart < 0) return null
+        if (extracted.text.substring(relativeTokenStart, relativeCursor) != currentWord) return null
+        return extracted.absoluteSelectionStart
+    }
+
+    private fun captureExtractedSelection(connection: InputConnection): ExtractedSelection? {
+        val extracted = connection.getExtractedText(ExtractedTextRequest(), 0) ?: return null
+        val text = extracted.text?.toString() ?: return null
+        val relativeStart = extracted.selectionStart
+        val relativeEnd = extracted.selectionEnd
+        if (extracted.startOffset < 0) return null
+        if (relativeStart !in 0..text.length || relativeEnd !in 0..text.length) return null
+
+        val absoluteStart = extracted.startOffset.toLong() + relativeStart
+        val absoluteEnd = extracted.startOffset.toLong() + relativeEnd
+        if (absoluteStart !in 0..Int.MAX_VALUE.toLong()) return null
+        if (absoluteEnd !in 0..Int.MAX_VALUE.toLong()) return null
+
+        return ExtractedSelection(
+            text = text,
+            relativeSelectionStart = relativeStart,
+            relativeSelectionEnd = relativeEnd,
+            absoluteSelectionStart = absoluteStart.toInt(),
+            absoluteSelectionEnd = absoluteEnd.toInt(),
+        )
+    }
+
+    private fun restoreCollapsedSelection(
+        connection: InputConnection,
+        preferredCursor: Int,
+        fallbackCursor: Int,
+    ) {
+        if (!connection.setSelection(preferredCursor, preferredCursor)) {
+            connection.setSelection(fallbackCursor, fallbackCursor)
+        }
     }
 
     private fun isCurrentSession(generation: Long, connection: InputConnection): Boolean {

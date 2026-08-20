@@ -13,9 +13,12 @@ import android.view.inputmethod.ExtractedText
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
@@ -387,6 +390,288 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `translation stays visible ignores duplicate taps and succeeds only after commit`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val delayed = DelayedRemoteResult("hello")
+        val calls = AtomicInteger()
+        val service = testService(connection).apply {
+            translation = {
+                calls.incrementAndGet()
+                delayed.complete(it)
+            }
+        }
+        val root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), root.railView.state)
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+        root.keyboardView.onTranslateClick?.invoke()
+        assertEquals(1, calls.get())
+
+        delayed.release.countDown()
+        idleMainLooperUntil { connection.text() == "hello" }
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
+        service.onUpdateSelection(0, 7, 5, 5, -1, -1)
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
+        shadowOf(Looper.getMainLooper()).idleFor(1_199, TimeUnit.MILLISECONDS)
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.MILLISECONDS)
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation installs loading and its lock before synchronous remote code`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val calls = AtomicInteger()
+        val stateAtFirstCall = AtomicReference<TopRailState>()
+        val service = testService(connection)
+        lateinit var root: KeyboardRootView
+        service.translation = {
+            val call = calls.incrementAndGet()
+            if (call == 1) {
+                stateAtFirstCall.set(root.railView.state)
+                root.keyboardView.onTranslateClick?.invoke()
+            }
+            RemoteResult.Success("hello")
+        }
+        root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        drainMainLooper()
+
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), stateAtFirstCall.get())
+        assertEquals(1, calls.get())
+        assertEquals("hello", connection.text())
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `selection move cancels loading and a stale result cannot commit`() {
+        val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
+        val delayed = DelayedRemoteResult("hello")
+        val service = testService(connection).apply { translation = delayed::complete }
+        val root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+        connection.select(8, 13)
+        service.onUpdateSelection(0, 7, 8, 13, -1, -1)
+        assertFalse(root.railView.state is TopRailState.Translation)
+
+        delayed.release.countDown()
+        drainMainLooper()
+        assertEquals("bonjour monde", connection.text())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `cancelled attempt cannot clear or commit over a newer loading attempt`() {
+        val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
+        val delayed = DelayedRemoteResult("fresh")
+        val calls = AtomicInteger()
+        lateinit var service: TestJefeKeyboardService
+        lateinit var root: KeyboardRootView
+        service = testService(connection).apply {
+            translation = {
+                if (calls.incrementAndGet() == 1) {
+                    connection.select(8, 13)
+                    service.onUpdateSelection(0, 7, 8, 13, -1, -1)
+                    connection.select(0, 7)
+                    root.keyboardView.onTranslateClick?.invoke()
+                    RemoteResult.Success("stale")
+                } else {
+                    delayed.complete(it)
+                }
+            }
+        }
+        root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+
+        assertEquals(2, calls.get())
+        assertEquals("bonjour monde", connection.text())
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), root.railView.state)
+
+        delayed.release.countDown()
+        idleMainLooperUntil { connection.text() == "fresh monde" }
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `remote failure stays visible retries once and then succeeds`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val replies = ArrayDeque<RemoteResult<String>>().apply {
+            add(RemoteResult.Failure("serveur indisponible"))
+            add(RemoteResult.Success("hello"))
+        }
+        val calls = AtomicInteger()
+        val service = testService(connection).apply {
+            translation = {
+                calls.incrementAndGet()
+                replies.removeFirst()
+            }
+        }
+        val root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+        assertTrue(ShadowToast.getTextOfLatestToast().contains("serveur indisponible"))
+        root.railView.retryButton().performClick()
+        idleMainLooperUntil { connection.text() == "hello" }
+
+        assertEquals(2, calls.get())
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `retry is discarded when the failed selection moved`() {
+        val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
+        val calls = AtomicInteger()
+        val service = testService(connection).apply {
+            translation = {
+                calls.incrementAndGet()
+                RemoteResult.Failure("indisponible")
+            }
+        }
+        val root = createRootAndStart(service)
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+        val retry = root.railView.retryButton()
+
+        connection.select(8, 13)
+        service.onUpdateSelection(0, 7, 8, 13, -1, -1)
+        retry.performClick()
+        drainMainLooper()
+
+        assertEquals(1, calls.get())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `editor rejection shows error and never success`() {
+        val connection = RejectingCommitInputConnection(context(), "bonjour", 0, 7)
+        val service = testService(connection).apply {
+            translation = { RemoteResult.Success("hello") }
+        }
+        val root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil { connection.commitAttempts.isNotEmpty() }
+
+        assertEquals("bonjour", connection.text())
+        assertEquals(TopRailState.Translation(TranslationFeedback.Error), root.railView.state)
+        assertTrue(ShadowToast.getTextOfLatestToast().contains("éditeur", ignoreCase = true))
+        service.onDestroy()
+    }
+
+    @Test
+    fun `unexpected remote exception becomes a retryable error`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val service = testService(connection).apply {
+            translation = { throw IOException("private backend detail") }
+        }
+        val root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+
+        assertFalse(ShadowToast.getTextOfLatestToast().contains("private backend detail"))
+        assertTrue(root.railView.retryButton().isEnabled)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation cancellation removes feedback without becoming a retryable error`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val service = testService(connection).apply {
+            translation = { throw CancellationException("private cancellation detail") }
+        }
+        val root = createRootAndStart(service)
+
+        root.keyboardView.onTranslateClick?.invoke()
+        drainMainLooper()
+
+        assertFalse(root.railView.state is TopRailState.Translation)
+        assertFalse(ShadowToast.getTextOfLatestToast().orEmpty().contains("private cancellation detail"))
+        service.onDestroy()
+    }
+
+    @Test
+    fun `retry cancels the prior error timer before showing a new loading`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val delayed = DelayedRemoteResult("hello")
+        val calls = AtomicInteger()
+        val service = testService(connection).apply {
+            translation = {
+                if (calls.getAndIncrement() == 0) {
+                    RemoteResult.Failure("indisponible")
+                } else {
+                    delayed.complete(it)
+                }
+            }
+        }
+        val root = createRootAndStart(service)
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+
+        root.railView.retryButton().performClick()
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+        shadowOf(Looper.getMainLooper()).idleFor(3_000, TimeUnit.MILLISECONDS)
+
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), root.railView.state)
+        delayed.release.countDown()
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation error clears after exactly three seconds`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val service = testService(connection).apply {
+            translation = { RemoteResult.Failure("indisponible") }
+        }
+        val root = createRootAndStart(service)
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+
+        shadowOf(Looper.getMainLooper()).idleFor(2_999, TimeUnit.MILLISECONDS)
+        assertEquals(TopRailState.Translation(TranslationFeedback.Error), root.railView.state)
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.MILLISECONDS)
+
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `every service boundary cancels a pending translation`() {
+        listOf<Pair<Boolean, (TestJefeKeyboardService) -> Unit>>(
+            false to { it.hideWindow() },
+            false to { it.onFinishInputView(false) },
+            false to { it.onStartInput(editorInfo(), false) },
+            false to { it.onFinishInput() },
+            true to { it.onDestroy() },
+        ).forEach { (destroyedByStop, stop) ->
+            assertPendingTranslationCancelled(stop, destroyedByStop)
+        }
+    }
+
+    @Test
     fun `translation replaces the originally selected text when selection is unchanged`() {
         val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
         val service = testService(connection)
@@ -745,6 +1030,26 @@ class JefeKeyboardServiceTest {
             Thread.sleep(10)
         }
         assertTrue("Timed out waiting for observable editor state", condition())
+    }
+
+    private fun assertPendingTranslationCancelled(
+        stop: (TestJefeKeyboardService) -> Unit,
+        destroyedByStop: Boolean,
+    ) {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val delayed = DelayedRemoteResult("hello")
+        val service = testService(connection).apply { translation = delayed::complete }
+        val root = createRootAndStart(service)
+        root.keyboardView.onTranslateClick?.invoke()
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+
+        stop(service)
+        delayed.release.countDown()
+        drainMainLooper()
+
+        assertEquals("bonjour", connection.text())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        if (!destroyedByStop) service.onDestroy()
     }
 
     private fun context(): Context = RuntimeEnvironment.getApplication()

@@ -14,11 +14,14 @@ import androidx.core.content.ContextCompat
 import androidx.preference.PreferenceManager
 import java.io.File
 import java.util.Collections
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 internal interface AudioRecorder {
@@ -66,6 +69,11 @@ open class JefeKeyboardService : InputMethodService() {
     private var sessionGeneration = 0L
     private var suggestionSnapshot: SuggestionSnapshot? = null
     private val suggestionGate = SuggestionSessionGate()
+    private var translationJob: Job? = null
+    private var translationFeedbackJob: Job? = null
+    private var failedTranslationSelection: SelectionSnapshot? = null
+    private var expectedTranslationSelectionUpdate: EditorSelectionRange? = null
+    private var translationAttemptId = 0L
 
     private var recordingMode = false
     private var recorder: AudioRecorder? = null
@@ -103,6 +111,7 @@ open class JefeKeyboardService : InputMethodService() {
         setupRailCallbacks(root.railView)
         root.keyboardView.enterAction = pendingEnterAction
         root.keyboardView.isRecording = recordingMode
+        root.keyboardView.isTranslating = railInputs.translation == TranslationFeedback.Loading
         root.keyboardView.remoteActionsEnabled =
             editorPrivacy.allowTranslation || editorPrivacy.allowDictation
         setSuggestions(emptyList())
@@ -147,6 +156,11 @@ open class JefeKeyboardService : InputMethodService() {
             candidatesEnd,
         )
         val range = EditorSelectionRange(newSelStart, newSelEnd)
+        if (range == expectedTranslationSelectionUpdate) {
+            expectedTranslationSelectionUpdate = null
+        } else if (railInputs.translation != TranslationFeedback.Idle) {
+            cancelTranslation()
+        }
         if (!suggestionGate.recordSelectionUpdate(range)) invalidateSuggestions()
     }
 
@@ -173,7 +187,15 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun dismissClipboardPrompt() = Unit
 
-    private fun retryTranslation() = Unit
+    private fun retryTranslation() {
+        val expected = failedTranslationSelection ?: return
+        val connection = currentInputConnection ?: return clearTranslationFeedback()
+        val current = captureSelection(connection, connection.getSelectedText(0)?.toString())
+        if (current != expected) return clearTranslationFeedback()
+        translationFeedbackJob?.cancel()
+        setTranslationFeedback(TranslationFeedback.Idle)
+        launchTranslation(connection, expected)
+    }
 
     private fun renderRail() {
         rootView?.renderRail(TopRailResolver.resolve(railInputs))
@@ -181,6 +203,12 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun setSuggestions(values: List<String>) {
         railInputs = railInputs.copy(suggestions = values)
+        renderRail()
+    }
+
+    private fun setTranslationFeedback(feedback: TranslationFeedback) {
+        railInputs = railInputs.copy(translation = feedback)
+        keyboardView?.isTranslating = feedback == TranslationFeedback.Loading
         renderRail()
     }
 
@@ -478,38 +506,111 @@ open class JefeKeyboardService : InputMethodService() {
             return
         }
 
-        val generation = sessionGeneration
-        Toast.makeText(this, "Traduction…", Toast.LENGTH_SHORT).show()
-        sessionScope.launch {
-            val result = translateText(selection.selectedText)
-            if (
-                !isCurrentSession(generation, connection) ||
-                captureSelection(connection, connection.getSelectedText(0)?.toString()) != selection
-            ) {
-                return@launch
-            }
+        launchTranslation(connection, selection)
+    }
 
-            when (result) {
-                is RemoteResult.Success -> {
-                    if (result.value.isBlank()) {
-                        showRemoteFailure(
-                            "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
-                        )
-                    } else if (connection.commitText(result.value, 1)) {
-                        invalidateSuggestions()
-                        Toast.makeText(
-                            this@JefeKeyboardService,
-                            "Traduit ✓",
-                            Toast.LENGTH_SHORT,
-                        ).show()
-                    } else {
-                        showEditorFailure()
+    private fun launchTranslation(
+        connection: InputConnection,
+        selection: SelectionSnapshot,
+    ) {
+        if (translationJob?.isActive == true || !editorPrivacy.allowTranslation) return
+        translationFeedbackJob?.cancel()
+        translationFeedbackJob = null
+        val generation = sessionGeneration
+        val attemptId = ++translationAttemptId
+        failedTranslationSelection = selection
+        setTranslationFeedback(TranslationFeedback.Loading)
+        val job = sessionScope.launch(start = CoroutineStart.LAZY) {
+            val result = try {
+                translateText(selection.selectedText)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                RemoteResult.Failure("La traduction a échoué. Réessayez.")
+            }
+            applyTranslationResult(attemptId, generation, connection, selection, result)
+        }
+        translationJob = job
+        job.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                serviceScope.launch {
+                    if (attemptId == translationAttemptId) {
+                        translationJob = null
+                        clearTranslationFeedback()
                     }
                 }
-
-                is RemoteResult.Failure -> showRemoteFailure(result.message)
             }
         }
+        job.start()
+    }
+
+    private fun applyTranslationResult(
+        attemptId: Long,
+        generation: Long,
+        connection: InputConnection,
+        selection: SelectionSnapshot,
+        result: RemoteResult<String>,
+    ) {
+        if (attemptId != translationAttemptId) return
+        translationJob = null
+        if (!isCurrentSession(generation, connection)) {
+            clearTranslationFeedback()
+            return
+        }
+        val current = captureSelection(connection, connection.getSelectedText(0)?.toString())
+        if (current != selection) {
+            clearTranslationFeedback()
+            return
+        }
+
+        when (result) {
+            is RemoteResult.Success -> when {
+                result.value.isBlank() -> showTranslationError(
+                    "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
+                )
+                connection.commitText(result.value, 1) -> {
+                    failedTranslationSelection = null
+                    expectedTranslationSelectionUpdate = currentRange(connection)
+                    invalidateSuggestions()
+                    setTranslationFeedback(TranslationFeedback.Success)
+                    scheduleTranslationClear(1_200L)
+                }
+                else -> {
+                    showEditorFailure()
+                    showTranslationError("L’éditeur a refusé la traduction.")
+                }
+            }
+            is RemoteResult.Failure -> showTranslationError(result.message)
+        }
+    }
+
+    private fun showTranslationError(message: String) {
+        setTranslationFeedback(TranslationFeedback.Error)
+        showRemoteFailure(message)
+        scheduleTranslationClear(3_000L)
+    }
+
+    private fun scheduleTranslationClear(delayMillis: Long) {
+        translationFeedbackJob?.cancel()
+        translationFeedbackJob = sessionScope.launch {
+            delay(delayMillis)
+            clearTranslationFeedback()
+        }
+    }
+
+    private fun clearTranslationFeedback() {
+        translationFeedbackJob?.cancel()
+        translationFeedbackJob = null
+        failedTranslationSelection = null
+        expectedTranslationSelectionUpdate = null
+        setTranslationFeedback(TranslationFeedback.Idle)
+    }
+
+    private fun cancelTranslation() {
+        translationAttemptId += 1
+        translationJob?.cancel()
+        translationJob = null
+        clearTranslationFeedback()
     }
 
     internal open suspend fun translateText(text: String): RemoteResult<String> {
@@ -608,6 +709,7 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun resetSession() {
+        cancelTranslation()
         sessionGeneration += 1
         sessionJob.cancel()
         deletePendingAudioFiles()
@@ -645,22 +747,26 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     override fun hideWindow() {
+        cancelTranslation()
         stopRecording(launchTranscription = false)
         super.hideWindow()
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        cancelTranslation()
         stopRecording(launchTranscription = false)
         super.onFinishInputView(finishingInput)
     }
 
     override fun onFinishInput() {
+        cancelTranslation()
         stopRecording(launchTranscription = false)
         resetSession()
         super.onFinishInput()
     }
 
     override fun onDestroy() {
+        cancelTranslation()
         stopRecording(launchTranscription = false)
         serviceScope.cancel()
         deletePendingAudioFiles()

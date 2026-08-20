@@ -9,6 +9,7 @@ import android.os.Looper
 import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
 import java.io.File
 import java.io.FileOutputStream
@@ -217,6 +218,27 @@ class KeyboardViewTest {
         assertEquals(listOf("q"), committed)
         assertEquals(1, view.clickCount)
         assertEquals(1, view.hapticCount)
+    }
+
+    @Test
+    fun `translating key is active blue described and ignores touches`() {
+        var translationCalls = 0
+        view.onTranslateClick = { translationCalls += 1 }
+        val invalidationsBefore = view.invalidateCount
+
+        view.isTranslating = true
+        val translate = view.renderedKeys().single {
+            it.action == KeyboardView.KeyAction.TRANSLATE
+        }
+        tap(translate.centerX, translate.centerY)
+
+        assertTrue(view.invalidateCount > invalidationsBefore)
+        assertEquals(ContextCompat.getColor(view.context, R.color.signal_blue), translate.backgroundColor)
+        assertEquals(ContextCompat.getColor(view.context, R.color.on_action), translate.foregroundColor)
+        assertEquals("Traduction en cours…", view.contentDescription)
+        assertEquals(0, translationCalls)
+        assertEquals(0, view.clickCount)
+        assertEquals(0, view.hapticCount)
     }
 
     @Test

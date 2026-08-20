@@ -47,6 +47,15 @@ open class KeyboardView @JvmOverloads constructor(
             invalidate()
         }
 
+    var isTranslating = false
+        set(value) {
+            field = value
+            contentDescription = context.getString(
+                if (value) R.string.rail_translation_loading else R.string.keyboard_accessibility_label,
+            )
+            invalidate()
+        }
+
     var symbolMode = false
         set(value) {
             if (field == value) return
@@ -291,6 +300,7 @@ open class KeyboardView @JvmOverloads constructor(
         val background = backgroundPaintFor(key.def, pressed)
         canvas.drawRoundRect(key.rect, keyCorner, keyCorner, background)
         if (!pressed && key.def.action !in setOf(KeyAction.ENTER, KeyAction.MIC) &&
+            !(key.def.action == KeyAction.TRANSLATE && isTranslating) &&
             !(key.def.action == KeyAction.SHIFT && isShifted)
         ) {
             canvas.drawRoundRect(key.rect, keyCorner, keyCorner, outlinePaint)
@@ -317,6 +327,7 @@ open class KeyboardView @JvmOverloads constructor(
         definition.action == KeyAction.ENTER -> if (pressed) actionPressedPaint else actionPaint
         definition.action == KeyAction.MIC && isRecording -> if (pressed) actionPressedPaint else recordingPaint
         definition.action == KeyAction.MIC -> if (pressed) pressedPaint else microphonePaint
+        definition.action == KeyAction.TRANSLATE && isTranslating -> actionPaint
         definition.action == KeyAction.SHIFT && isShifted -> if (pressed) actionPressedPaint else shiftPaint
         pressed -> pressedPaint
         definition.isSpecial -> specialPaint
@@ -327,6 +338,7 @@ open class KeyboardView @JvmOverloads constructor(
         definition.iconType == IconType.MIC && isRecording -> iconRecordingColor
         definition.iconType == IconType.MIC && pressed -> iconMicPressedColor
         definition.iconType == IconType.MIC -> iconMicColor
+        definition.iconType == IconType.TRANSLATE && isTranslating -> actionTextPaint.color
         definition.iconType != null -> iconDefaultColor
         else -> textPaintFor(definition).color
     }
@@ -455,7 +467,7 @@ open class KeyboardView @JvmOverloads constructor(
     }
 
     private fun handleKey(key: ComputedKey): Boolean {
-        if (!remoteAllowed(key.def.action)) return false
+        if (!touchAllowed(key.def.action)) return false
         return when (key.def.action) {
             KeyAction.CHAR -> {
                 val char = key.def.char ?: return false
@@ -502,8 +514,11 @@ open class KeyboardView @JvmOverloads constructor(
     }
 
     private fun hitTest(x: Float, y: Float): ComputedKey? {
-        return computedKeys.firstOrNull { it.rect.contains(x, y) && remoteAllowed(it.def.action) }
+        return computedKeys.firstOrNull { it.rect.contains(x, y) && touchAllowed(it.def.action) }
     }
+
+    private fun touchAllowed(action: KeyAction): Boolean =
+        remoteAllowed(action) && !(action == KeyAction.TRANSLATE && isTranslating)
 
     private fun remoteAllowed(action: KeyAction): Boolean =
         remoteActionsEnabled || (action != KeyAction.MIC && action != KeyAction.TRANSLATE)

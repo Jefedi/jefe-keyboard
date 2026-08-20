@@ -2,6 +2,7 @@ package ovh.jefe.keyboard
 
 import android.content.Context
 import android.view.View
+import android.widget.Button
 import androidx.test.core.app.ApplicationProvider
 import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
@@ -89,6 +90,27 @@ class KeyboardRailViewTest {
             listOf("clipboard", "suggest:bonjour", "retry", "prompt:entry-7", "dismiss"),
             events,
         )
+    }
+
+    @Test
+    fun `translation error is the only clickable feedback and retries through a native button`() {
+        val rail = KeyboardRailView(context)
+        var retries = 0
+        rail.onTranslationRetryClick = { retries += 1 }
+
+        listOf(TranslationFeedback.Loading, TranslationFeedback.Success).forEach { feedback ->
+            rail.render(TopRailState.Translation(feedback))
+            assertEquals(1, rail.touchControls().size)
+        }
+
+        rail.render(TopRailState.Translation(TranslationFeedback.Error))
+        val retry = rail.retryButton()
+        retry.performClick()
+
+        assertEquals(Button::class.java, retry.javaClass)
+        assertEquals("Traduction impossible · Réessayer", retry.text.toString())
+        assertTrue(retry.isEnabled)
+        assertEquals(1, retries)
     }
 
     @Test

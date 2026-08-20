@@ -390,6 +390,40 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `session replacement during translation preflight never sends stale editor text`() {
+        val oldConnection = SynchronousSelectedTextCallbackInputConnection(
+            context(),
+            "bonjour",
+            0,
+            7,
+        )
+        val newConnection = EditableInputConnection(context(), "nouveau", 0, 7)
+        val calls = AtomicInteger()
+        lateinit var service: TestJefeKeyboardService
+        service = testService(oldConnection).apply {
+            translation = {
+                calls.incrementAndGet()
+                RemoteResult.Success("hello")
+            }
+        }
+        val root = createRootAndStart(service)
+        oldConnection.onSelectedTextRead = {
+            oldConnection.onSelectedTextRead = null
+            service.testConnection = newConnection
+            service.onStartInput(editorInfo(), false)
+        }
+
+        root.keyboardView.onTranslateClick?.invoke()
+        drainMainLooper()
+
+        assertEquals(0, calls.get())
+        assertEquals("bonjour", oldConnection.text())
+        assertEquals("nouveau", newConnection.text())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
     fun `translation stays visible ignores duplicate taps and succeeds only after commit`() {
         val connection = EditableInputConnection(context(), "bonjour", 0, 7)
         val delayed = DelayedRemoteResult("hello")
@@ -631,6 +665,56 @@ class JefeKeyboardServiceTest {
 
         assertEquals(1, calls.get())
         assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `stale retry read cannot clear a newer loading attempt`() {
+        val connection = SynchronousSelectedTextCallbackInputConnection(
+            context(),
+            "bonjour",
+            0,
+            7,
+        )
+        val delayed = DelayedRemoteResult("hello")
+        val calls = AtomicInteger()
+        lateinit var service: TestJefeKeyboardService
+        lateinit var root: KeyboardRootView
+        service = testService(connection).apply {
+            translation = {
+                if (calls.incrementAndGet() == 1) {
+                    RemoteResult.Failure("indisponible")
+                } else {
+                    delayed.complete(it)
+                }
+            }
+        }
+        root = createRootAndStart(service)
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+        connection.onSelectedTextRead = {
+            connection.onSelectedTextRead = null
+            service.onUpdateSelection(0, 7, 0, 7, -1, -1)
+            root.keyboardView.onTranslateClick?.invoke()
+            assertEquals(
+                TopRailState.Translation(TranslationFeedback.Loading),
+                root.railView.state,
+            )
+        }
+
+        root.railView.retryButton().performClick()
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+
+        assertEquals(2, calls.get())
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), root.railView.state)
+        shadowOf(Looper.getMainLooper()).idleFor(3_000, TimeUnit.MILLISECONDS)
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), root.railView.state)
+
+        delayed.release.countDown()
+        idleMainLooperUntil { connection.text() == "hello" }
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
         service.onDestroy()
     }
 
@@ -1261,6 +1345,21 @@ private class SynchronousCommitCallbackInputConnection(
         val accepted = super.commitText(text, newCursorPosition)
         if (accepted) onAcceptedCommit?.invoke()
         return accepted
+    }
+}
+
+private class SynchronousSelectedTextCallbackInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+    selectionEnd: Int = selectionStart,
+) : EditableInputConnection(context, text, selectionStart, selectionEnd) {
+    var onSelectedTextRead: (() -> Unit)? = null
+
+    override fun getSelectedText(flags: Int): CharSequence? {
+        val selectedText = super.getSelectedText(flags)
+        onSelectedTextRead?.invoke()
+        return selectedText
     }
 }
 

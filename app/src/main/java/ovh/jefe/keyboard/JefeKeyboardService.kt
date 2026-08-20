@@ -188,13 +188,34 @@ open class JefeKeyboardService : InputMethodService() {
     private fun dismissClipboardPrompt() = Unit
 
     private fun retryTranslation() {
+        val attemptId = translationAttemptId
+        val generation = sessionGeneration
         val expected = failedTranslationSelection ?: return
-        val connection = currentInputConnection ?: return clearTranslationFeedback()
-        val current = captureSelection(connection, connection.getSelectedText(0)?.toString())
-        if (current != expected) return clearTranslationFeedback()
-        translationFeedbackJob?.cancel()
-        setTranslationFeedback(TranslationFeedback.Idle)
-        launchTranslation(connection, expected)
+        val connection = currentInputConnection ?: return
+        if (!isCurrentTranslationRetry(attemptId, generation, connection, expected)) return
+        val selectedText = connection.getSelectedText(0)?.toString()
+        if (!isCurrentTranslationRetry(attemptId, generation, connection, expected)) return
+        val current = captureSelection(connection, selectedText) {
+            isCurrentTranslationRetry(attemptId, generation, connection, expected)
+        }
+        if (!isCurrentTranslationRetry(attemptId, generation, connection, expected)) return
+        if (current != expected) {
+            clearTranslationFeedback()
+            return
+        }
+        launchTranslation(generation, connection, expected)
+    }
+
+    private fun isCurrentTranslationRetry(
+        attemptId: Long,
+        generation: Long,
+        connection: InputConnection,
+        selection: SelectionSnapshot,
+    ): Boolean {
+        return attemptId == translationAttemptId &&
+            isCurrentSession(generation, connection) &&
+            failedTranslationSelection == selection &&
+            railInputs.translation == TranslationFeedback.Error
     }
 
     private fun renderRail() {
@@ -490,13 +511,19 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun translateSelection() {
         if (!editorPrivacy.allowTranslation) return
+        val generation = sessionGeneration
         val connection = currentInputConnection ?: return
+        if (!isCurrentSession(generation, connection)) return
         val selectedText = connection.getSelectedText(0)?.toString()
+        if (!isCurrentSession(generation, connection)) return
         if (selectedText.isNullOrBlank()) {
             Toast.makeText(this, "Sélectionnez du texte d'abord", Toast.LENGTH_SHORT).show()
             return
         }
-        val selection = captureSelection(connection, selectedText)
+        val selection = captureSelection(connection, selectedText) {
+            isCurrentSession(generation, connection)
+        }
+        if (!isCurrentSession(generation, connection)) return
         if (selection == null) {
             Toast.makeText(
                 this,
@@ -506,17 +533,23 @@ open class JefeKeyboardService : InputMethodService() {
             return
         }
 
-        launchTranslation(connection, selection)
+        launchTranslation(generation, connection, selection)
     }
 
     private fun launchTranslation(
+        generation: Long,
         connection: InputConnection,
         selection: SelectionSnapshot,
     ) {
-        if (translationJob?.isActive == true || !editorPrivacy.allowTranslation) return
+        if (
+            !isCurrentSession(generation, connection) ||
+            translationJob?.isActive == true ||
+            !editorPrivacy.allowTranslation
+        ) {
+            return
+        }
         translationFeedbackJob?.cancel()
         translationFeedbackJob = null
-        val generation = sessionGeneration
         val attemptId = ++translationAttemptId
         failedTranslationSelection = selection
         setTranslationFeedback(TranslationFeedback.Loading)
@@ -555,7 +588,9 @@ open class JefeKeyboardService : InputMethodService() {
         translationJob = null
         val selectedText = connection.getSelectedText(0)?.toString()
         if (!continueTranslationAttempt(attemptId, generation, connection)) return
-        val current = captureSelection(connection, selectedText)
+        val current = captureSelection(connection, selectedText) {
+            continueTranslationAttempt(attemptId, generation, connection)
+        }
         if (!continueTranslationAttempt(attemptId, generation, connection)) return
         if (current != selection) {
             clearTranslationFeedback()
@@ -648,9 +683,12 @@ open class JefeKeyboardService : InputMethodService() {
     private fun captureSelection(
         connection: InputConnection,
         selectedText: String?,
+        afterEditorRead: () -> Boolean = { true },
     ): SelectionSnapshot? {
         if (selectedText == null) return null
-        val extracted = captureExtractedSelection(connection) ?: return null
+        val extracted = captureExtractedSelection(connection)
+        if (!afterEditorRead()) return null
+        if (extracted == null) return null
         val relativeStart = minOf(
             extracted.relativeSelectionStart,
             extracted.relativeSelectionEnd,
@@ -660,16 +698,20 @@ open class JefeKeyboardService : InputMethodService() {
             extracted.relativeSelectionEnd,
         )
         if (extracted.text.substring(relativeStart, relativeEnd) != selectedText) return null
+        val textBeforeSelection = connection.getTextBeforeCursor(MAX_TEXT_CONTEXT, 0)
+            ?.toString()
+            .orEmpty()
+        if (!afterEditorRead()) return null
+        val textAfterSelection = connection.getTextAfterCursor(MAX_TEXT_CONTEXT, 0)
+            ?.toString()
+            .orEmpty()
+        if (!afterEditorRead()) return null
         return SelectionSnapshot(
             selectedText = selectedText,
             absoluteSelectionStart = extracted.absoluteSelectionStart,
             absoluteSelectionEnd = extracted.absoluteSelectionEnd,
-            textBeforeSelection = connection.getTextBeforeCursor(MAX_TEXT_CONTEXT, 0)
-                ?.toString()
-                .orEmpty(),
-            textAfterSelection = connection.getTextAfterCursor(MAX_TEXT_CONTEXT, 0)
-                ?.toString()
-                .orEmpty(),
+            textBeforeSelection = textBeforeSelection,
+            textAfterSelection = textAfterSelection,
         )
     }
 

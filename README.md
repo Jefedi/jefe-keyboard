@@ -1,25 +1,49 @@
 # Jefe Keyboard
 
-Clavier Android avec dictée vocale (Whisper) et traduction (LibreTranslate) self-hosted.
+Clavier Android français QWERTY avec suggestions locales, dictée via Whisper auto-hébergé et traduction via LibreTranslate auto-hébergé.
 
-## Features
-- Layout QWERTY + chiffres visibles
-- Prédiction de mots en français
-- Dictée vocale → votre serveur Whisper
-- Traduction du texte sélectionné → votre serveur LibreTranslate
-- URLs et clés API configurables dans l'app
-- Zéro Google, zéro cloud tiers
+## Prérequis
 
-## Setup
-1. Installer l'APK
-2. Activer le clavier: Paramètres → Système → Clavier → Jefe Keyboard
-3. Ouvrir l'app → configurer les URLs Whisper et LibreTranslate
+- Android 7.0 ou ultérieur (API 24+).
+- JDK 17 pour compiler.
+- Des URL HTTPS absolues vers vos services Whisper et LibreTranslate si vous utilisez la dictée ou la traduction.
 
-## Build
+## Construire l'APK de débogage
+
+Sous Unix/macOS :
+
 ```bash
 ./gradlew assembleDebug
 ```
 
-Windows: `gradlew.bat assembleDebug`
+Sous Windows :
 
-APK: `app/build/outputs/apk/debug/app-debug.apk`
+```bat
+gradlew.bat assembleDebug
+```
+
+L'APK est créé à l'emplacement suivant :
+
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
+
+## Installer et configurer
+
+Installez directement l'APK sur un appareil connecté et autorisé :
+
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+1. Ouvrez **Jefe Keyboard** depuis le lanceur.
+2. Activez **Jefe Keyboard** dans les paramètres système du clavier, puis sélectionnez-le comme clavier actif.
+3. Autorisez le microphone lorsque l'application le demande pour utiliser la dictée.
+4. Dans l'application, saisissez les URL de base HTTPS absolues de Whisper et de LibreTranslate (par exemple `https://voice.example.net/api/` et `https://translate.example.net/`). L'application ajoute elle-même les chemins `/v1/audio/transcriptions` et `/translate`.
+5. Les clés API sont facultatives ; elles sont masquées pendant la saisie et leur valeur n'apparaît jamais dans les résumés de réglages.
+
+## Confidentialité et portée de l'artefact
+
+La saisie et les suggestions restent sur l'appareil. La dictée et la traduction n'envoient des données qu'aux services HTTPS que vous configurez ; aucun service cloud tiers n'est imposé. Les sauvegardes Android de l'application sont désactivées afin de ne pas inclure les préférences contenant des secrets.
+
+Cet APK est signé avec la clé de débogage Android pour une installation et des tests directs. Ce n'est pas une version de publication ni un artefact destiné au Play Store.

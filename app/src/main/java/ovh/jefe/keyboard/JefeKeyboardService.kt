@@ -67,12 +67,13 @@ open class JefeKeyboardService : InputMethodService() {
     private var editorPrivacy = EditorPrivacyPolicy.evaluate(null)
     private var pendingEnterAction = EditorInfo.IME_ACTION_UNSPECIFIED
     private var sessionGeneration = 0L
+    private var externalSelectionRevision = 0L
     private var suggestionSnapshot: SuggestionSnapshot? = null
     private val suggestionGate = SuggestionSessionGate()
     private var translationJob: Job? = null
     private var translationFeedbackJob: Job? = null
     private var failedTranslationAttempt: FailedTranslationAttempt? = null
-    private var expectedTranslationSelectionUpdate: EditorSelectionRange? = null
+    private var expectedTranslationSelectionUpdate: ExpectedTranslationSelectionUpdate? = null
     private var translationAttemptId = 0L
 
     private var recordingMode = false
@@ -84,6 +85,7 @@ open class JefeKeyboardService : InputMethodService() {
         val generation: Long,
         val connection: InputConnection,
         val root: KeyboardRootView,
+        val selectionRevision: Long,
         val textBeforeCursor: String,
         val absoluteCursor: Int,
         val suggestions: List<String>,
@@ -93,6 +95,13 @@ open class JefeKeyboardService : InputMethodService() {
         val generation: Long,
         val connection: InputConnection,
         val root: KeyboardRootView,
+        val selectionRevision: Long,
+    )
+
+    private data class TranslationOwner(
+        val generation: Long,
+        val connection: InputConnection,
+        val selectionRevision: Long,
     )
 
     private data class SelectionSnapshot(
@@ -105,9 +114,14 @@ open class JefeKeyboardService : InputMethodService() {
 
     private data class FailedTranslationAttempt(
         val attemptId: Long,
-        val generation: Long,
-        val connection: InputConnection,
+        val owner: TranslationOwner,
         val selection: SelectionSnapshot,
+    )
+
+    private data class ExpectedTranslationSelectionUpdate(
+        val owner: TranslationOwner,
+        val previousSelection: EditorSelectionRange,
+        val selection: EditorSelectionRange,
     )
 
     private data class ExtractedSelection(
@@ -172,13 +186,21 @@ open class JefeKeyboardService : InputMethodService() {
             candidatesStart,
             candidatesEnd,
         )
-        val range = EditorSelectionRange(newSelStart, newSelEnd)
-        if (range == expectedTranslationSelectionUpdate) {
-            expectedTranslationSelectionUpdate = null
-        } else if (railInputs.translation != TranslationFeedback.Idle) {
-            cancelTranslation()
+        val previousSelection = EditorSelectionRange(oldSelStart, oldSelEnd)
+        val selection = EditorSelectionRange(newSelStart, newSelEnd)
+        val expectedTranslation = consumeExpectedTranslationSelectionUpdate(
+            previousSelection,
+            selection,
+        )
+        val expectedSuggestion = suggestionGate.recordSelectionUpdate(
+            previousSelection,
+            selection,
+        )
+        if (!expectedTranslation && !expectedSuggestion) {
+            advanceExternalSelectionRevision()
+            if (railInputs.translation != TranslationFeedback.Idle) cancelTranslation()
         }
-        if (!suggestionGate.recordSelectionUpdate(range)) invalidateSuggestions()
+        if (!expectedSuggestion) invalidateSuggestions()
     }
 
     private fun setupKeyboardCallbacks(root: KeyboardRootView) {
@@ -254,7 +276,12 @@ open class JefeKeyboardService : InputMethodService() {
             }
             return
         }
-        val owner = EditorOwner(sessionGeneration, connection, root)
+        val owner = EditorOwner(
+            sessionGeneration,
+            connection,
+            root,
+            externalSelectionRevision,
+        )
         if (!isCurrentTranslationRetry(failedAttempt, owner)) return
         val selectedText = owner.connection.getSelectedText(0)?.toString()
         if (!isCurrentTranslationRetry(failedAttempt, owner)) return
@@ -266,7 +293,7 @@ open class JefeKeyboardService : InputMethodService() {
             clearTranslationFeedback()
             return
         }
-        launchTranslation(failedAttempt.generation, owner.connection, failedAttempt.selection)
+        launchTranslation(owner, failedAttempt.selection)
     }
 
     private fun isCurrentTranslationRetry(
@@ -274,8 +301,9 @@ open class JefeKeyboardService : InputMethodService() {
         owner: EditorOwner,
     ): Boolean {
         return ownsCurrentTranslationError(failedAttempt) &&
-            owner.connection === failedAttempt.connection &&
-            owner.generation == failedAttempt.generation &&
+            owner.connection === failedAttempt.owner.connection &&
+            owner.generation == failedAttempt.owner.generation &&
+            owner.selectionRevision == failedAttempt.owner.selectionRevision &&
             isCurrentEditorOwner(owner)
     }
 
@@ -284,7 +312,8 @@ open class JefeKeyboardService : InputMethodService() {
     ): Boolean {
         return failedAttempt === failedTranslationAttempt &&
             failedAttempt.attemptId == translationAttemptId &&
-            failedAttempt.generation == sessionGeneration &&
+            failedAttempt.owner.generation == sessionGeneration &&
+            failedAttempt.owner.selectionRevision == externalSelectionRevision &&
             railInputs.translation == TranslationFeedback.Error
     }
 
@@ -305,10 +334,16 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun handleChar(root: KeyboardRootView, char: String) {
         val owner = captureEditorOwner(root) ?: return
+        val previousSelection = currentRange(owner.connection)
+        if (!isCurrentEditorOwner(owner)) return
         val committed = owner.connection.commitText(char, 1)
         if (!isCurrentEditorOwner(owner)) return
         if (committed) {
-            recordSuccessfulLocalMutation(owner, SuggestionMutation.CHARACTER)
+            recordSuccessfulLocalMutation(
+                owner,
+                SuggestionMutation.CHARACTER,
+                previousSelection,
+            )
         } else {
             invalidateSuggestions()
         }
@@ -316,6 +351,8 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun handleDelete(root: KeyboardRootView) {
         val owner = captureEditorOwner(root) ?: return
+        val previousSelection = currentRange(owner.connection)
+        if (!isCurrentEditorOwner(owner)) return
         val selectedText = owner.connection.getSelectedText(0)
         if (!isCurrentEditorOwner(owner)) return
         val success = if (!selectedText.isNullOrEmpty()) {
@@ -325,7 +362,7 @@ open class JefeKeyboardService : InputMethodService() {
         }
         if (!isCurrentEditorOwner(owner)) return
         if (success) {
-            recordSuccessfulLocalMutation(owner, SuggestionMutation.DELETE)
+            recordSuccessfulLocalMutation(owner, SuggestionMutation.DELETE, previousSelection)
         } else {
             invalidateSuggestions()
         }
@@ -351,10 +388,12 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun handleSpace(root: KeyboardRootView) {
         val owner = captureEditorOwner(root) ?: return
+        val previousSelection = currentRange(owner.connection)
+        if (!isCurrentEditorOwner(owner)) return
         val committed = owner.connection.commitText(" ", 1)
         if (!isCurrentEditorOwner(owner)) return
         if (committed) {
-            recordSuccessfulLocalMutation(owner, SuggestionMutation.SPACE)
+            recordSuccessfulLocalMutation(owner, SuggestionMutation.SPACE, previousSelection)
         } else {
             invalidateSuggestions()
         }
@@ -367,6 +406,7 @@ open class JefeKeyboardService : InputMethodService() {
             snapshot.generation != owner.generation ||
             snapshot.connection !== owner.connection ||
             snapshot.root !== owner.root ||
+            snapshot.selectionRevision != owner.selectionRevision ||
             word !in snapshot.suggestions
         ) {
             return
@@ -388,11 +428,15 @@ open class JefeKeyboardService : InputMethodService() {
         if (cursor != snapshot.absoluteCursor) return
         val tokenStart = cursor - currentWord.length
         if (tokenStart < 0) return
+        val collapsedSelection = EditorSelectionRange(cursor, cursor)
+        val tokenSelection = EditorSelectionRange(tokenStart, cursor)
+        if (!suggestionGate.recordExpectedSelection(collapsedSelection, tokenSelection)) {
+            invalidateSuggestionsIfCurrent(owner)
+            return
+        }
         val selectedToken = owner.connection.setSelection(tokenStart, cursor)
         if (!isCurrentEditorOwner(owner)) return
-        if (!selectedToken) return
-        if (!suggestionGate.recordExpectedSelection(EditorSelectionRange(tokenStart, cursor))) {
-            restoreCollapsedSelection(owner, cursor, tokenStart)
+        if (!selectedToken) {
             invalidateSuggestionsIfCurrent(owner)
             return
         }
@@ -404,7 +448,7 @@ open class JefeKeyboardService : InputMethodService() {
             invalidateSuggestionsIfCurrent(owner)
             return
         }
-        recordSuccessfulLocalMutation(owner, SuggestionMutation.SUGGESTION)
+        recordSuccessfulLocalMutation(owner, SuggestionMutation.SUGGESTION, tokenSelection)
     }
 
     private fun currentRange(connection: InputConnection): EditorSelectionRange? {
@@ -418,11 +462,12 @@ open class JefeKeyboardService : InputMethodService() {
     private fun recordSuccessfulLocalMutation(
         owner: EditorOwner,
         mutation: SuggestionMutation,
+        previousSelection: EditorSelectionRange?,
     ) {
         if (!isCurrentEditorOwner(owner)) return
         val selection = currentRange(owner.connection)
         if (!isCurrentEditorOwner(owner)) return
-        suggestionGate.recordSuccessfulMutation(mutation, selection)
+        suggestionGate.recordSuccessfulMutation(mutation, previousSelection, selection)
         updateSuggestions(owner)
     }
 
@@ -459,6 +504,7 @@ open class JefeKeyboardService : InputMethodService() {
                 owner.generation,
                 owner.connection,
                 owner.root,
+                owner.selectionRevision,
                 requireNotNull(textBeforeCursor),
                 absoluteCursor,
                 suggestions,
@@ -633,16 +679,21 @@ open class JefeKeyboardService : InputMethodService() {
             return
         }
 
-        launchTranslation(owner.generation, owner.connection, selection)
+        launchTranslation(owner, selection)
     }
 
     private fun launchTranslation(
-        generation: Long,
-        connection: InputConnection,
+        editorOwner: EditorOwner,
         selection: SelectionSnapshot,
     ) {
+        if (!isCurrentEditorOwner(editorOwner)) return
+        val owner = TranslationOwner(
+            editorOwner.generation,
+            editorOwner.connection,
+            editorOwner.selectionRevision,
+        )
         if (
-            !isCurrentSession(generation, connection) ||
+            !isCurrentTranslationOwner(owner) ||
             translationJob?.isActive == true ||
             !editorPrivacy.allowTranslation
         ) {
@@ -661,7 +712,7 @@ open class JefeKeyboardService : InputMethodService() {
             } catch (_: Exception) {
                 RemoteResult.Failure("La traduction a échoué. Réessayez.")
             }
-            applyTranslationResult(attemptId, generation, connection, selection, result)
+            applyTranslationResult(attemptId, owner, selection, result)
         }
         translationJob = job
         job.invokeOnCompletion { cause ->
@@ -679,19 +730,18 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun applyTranslationResult(
         attemptId: Long,
-        generation: Long,
-        connection: InputConnection,
+        owner: TranslationOwner,
         selection: SelectionSnapshot,
         result: RemoteResult<String>,
     ) {
-        if (!continueTranslationAttempt(attemptId, generation, connection)) return
+        if (!continueTranslationAttempt(attemptId, owner)) return
         translationJob = null
-        val selectedText = connection.getSelectedText(0)?.toString()
-        if (!continueTranslationAttempt(attemptId, generation, connection)) return
-        val current = captureSelection(connection, selectedText) {
-            continueTranslationAttempt(attemptId, generation, connection)
+        val selectedText = owner.connection.getSelectedText(0)?.toString()
+        if (!continueTranslationAttempt(attemptId, owner)) return
+        val current = captureSelection(owner.connection, selectedText) {
+            continueTranslationAttempt(attemptId, owner)
         }
-        if (!continueTranslationAttempt(attemptId, generation, connection)) return
+        if (!continueTranslationAttempt(attemptId, owner)) return
         if (current != selection) {
             clearTranslationFeedback()
             return
@@ -702,40 +752,46 @@ open class JefeKeyboardService : InputMethodService() {
                 if (result.value.isBlank()) {
                     showTranslationError(
                         attemptId,
-                        generation,
-                        connection,
+                        owner,
                         selection,
                         "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
                     )
                     return
                 }
 
-                val committed = connection.commitText(result.value, 1)
-                if (!continueTranslationAttempt(attemptId, generation, connection)) return
+                val committed = owner.connection.commitText(result.value, 1)
+                if (!continueTranslationAttempt(attemptId, owner)) return
                 if (!committed) {
                     showEditorFailure()
                     showTranslationError(
                         attemptId,
-                        generation,
-                        connection,
+                        owner,
                         selection,
                         "L’éditeur a refusé la traduction.",
                     )
                     return
                 }
 
-                val committedRange = currentRange(connection)
-                if (!continueTranslationAttempt(attemptId, generation, connection)) return
+                val committedRange = currentRange(owner.connection)
+                if (!continueTranslationAttempt(attemptId, owner)) return
                 failedTranslationAttempt = null
-                expectedTranslationSelectionUpdate = committedRange
+                expectedTranslationSelectionUpdate = committedRange?.let { range ->
+                    ExpectedTranslationSelectionUpdate(
+                        owner,
+                        EditorSelectionRange(
+                            selection.absoluteSelectionStart,
+                            selection.absoluteSelectionEnd,
+                        ),
+                        range,
+                    )
+                }
                 invalidateSuggestions()
                 setTranslationFeedback(TranslationFeedback.Success)
                 scheduleTranslationClear(1_200L)
             }
             is RemoteResult.Failure -> showTranslationError(
                 attemptId,
-                generation,
-                connection,
+                owner,
                 selection,
                 result.message,
             )
@@ -744,27 +800,24 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun continueTranslationAttempt(
         attemptId: Long,
-        generation: Long,
-        connection: InputConnection,
+        owner: TranslationOwner,
     ): Boolean {
         if (attemptId != translationAttemptId) return false
-        if (isCurrentSession(generation, connection)) return true
+        if (isCurrentTranslationOwner(owner)) return true
         clearTranslationFeedback()
         return false
     }
 
     private fun showTranslationError(
         attemptId: Long,
-        generation: Long,
-        connection: InputConnection,
+        owner: TranslationOwner,
         selection: SelectionSnapshot,
         message: String,
     ) {
-        if (!continueTranslationAttempt(attemptId, generation, connection)) return
+        if (!continueTranslationAttempt(attemptId, owner)) return
         failedTranslationAttempt = FailedTranslationAttempt(
             attemptId,
-            generation,
-            connection,
+            owner,
             selection,
         )
         setTranslationFeedback(TranslationFeedback.Error)
@@ -889,17 +942,41 @@ open class JefeKeyboardService : InputMethodService() {
         }
     }
 
+    private fun consumeExpectedTranslationSelectionUpdate(
+        previousSelection: EditorSelectionRange,
+        selection: EditorSelectionRange,
+    ): Boolean {
+        val expected = expectedTranslationSelectionUpdate ?: return false
+        val matches = isCurrentTranslationOwner(expected.owner) &&
+            expected.previousSelection == previousSelection &&
+            expected.selection == selection
+        if (matches) expectedTranslationSelectionUpdate = null
+        return matches
+    }
+
     private fun captureEditorOwner(root: KeyboardRootView): EditorOwner? {
         if (rootView !== root) return null
         val connection = currentInputConnection ?: return null
-        val owner = EditorOwner(sessionGeneration, connection, root)
+        val owner = EditorOwner(
+            sessionGeneration,
+            connection,
+            root,
+            externalSelectionRevision,
+        )
         return owner.takeIf(::isCurrentEditorOwner)
     }
 
     private fun isCurrentEditorOwner(owner: EditorOwner): Boolean {
         return owner.generation == sessionGeneration &&
             owner.connection === currentInputConnection &&
-            owner.root === rootView
+            owner.root === rootView &&
+            owner.selectionRevision == externalSelectionRevision
+    }
+
+    private fun isCurrentTranslationOwner(owner: TranslationOwner): Boolean {
+        return owner.generation == sessionGeneration &&
+            owner.connection === currentInputConnection &&
+            owner.selectionRevision == externalSelectionRevision
     }
 
     private fun isCurrentSession(generation: Long, connection: InputConnection): Boolean {
@@ -915,13 +992,25 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun resetSession() {
         cancelTranslation()
+        advanceExternalSelectionRevision()
         sessionGeneration += 1
         sessionJob.cancel()
         deletePendingAudioFiles()
         sessionJob = SupervisorJob(serviceJob)
         sessionScope = CoroutineScope(sessionJob + Dispatchers.Main.immediate)
+        suggestionGate.invalidate()
         suggestionSnapshot = null
         setSuggestions(emptyList())
+    }
+
+    private fun advanceExternalSelectionRevision() {
+        if (externalSelectionRevision == Long.MAX_VALUE) {
+            // Pair the wrapped revision with a new generation so no retired owner can match.
+            sessionGeneration += 1
+            externalSelectionRevision = 0L
+        } else {
+            externalSelectionRevision += 1
+        }
     }
 
     private fun releaseRecorder(activeRecorder: AudioRecorder) {

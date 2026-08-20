@@ -13,9 +13,14 @@ internal enum class SuggestionMutation {
 }
 
 internal class SuggestionSessionGate {
+    private data class ExpectedSelectionUpdate(
+        val previousSelection: EditorSelectionRange,
+        val selection: EditorSelectionRange,
+    )
+
     private var eligible = false
     private var sensitivePasteTaint = false
-    private val expectedSelections = ArrayDeque<EditorSelectionRange>()
+    private val expectedSelections = ArrayDeque<ExpectedSelectionUpdate>()
 
     fun startSession() {
         sensitivePasteTaint = false
@@ -34,6 +39,7 @@ internal class SuggestionSessionGate {
 
     fun recordSuccessfulMutation(
         mutation: SuggestionMutation,
+        previousSelection: EditorSelectionRange?,
         selection: EditorSelectionRange?,
     ) {
         val supported = when (mutation) {
@@ -45,26 +51,49 @@ internal class SuggestionSessionGate {
             -> true
         }
         eligible = !sensitivePasteTaint && supported && selection?.isCollapsed == true
-        if (selection == null || !enqueueExpectedSelection(selection)) {
+        if (
+            previousSelection == null ||
+            selection == null ||
+            !enqueueExpectedSelection(previousSelection, selection)
+        ) {
             invalidate()
             return
         }
     }
 
-    fun recordExpectedSelection(selection: EditorSelectionRange): Boolean =
-        enqueueExpectedSelection(selection)
+    fun recordExpectedSelection(
+        previousSelection: EditorSelectionRange,
+        selection: EditorSelectionRange,
+    ): Boolean = enqueueExpectedSelection(previousSelection, selection)
 
-    private fun enqueueExpectedSelection(selection: EditorSelectionRange): Boolean {
+    private fun enqueueExpectedSelection(
+        previousSelection: EditorSelectionRange,
+        selection: EditorSelectionRange,
+    ): Boolean {
         if (expectedSelections.size == MAX_PENDING_SELECTIONS) {
             invalidate()
             return false
         }
-        expectedSelections.addLast(selection)
+        expectedSelections.addLast(ExpectedSelectionUpdate(previousSelection, selection))
         return true
     }
 
-    fun recordSelectionUpdate(selection: EditorSelectionRange): Boolean {
-        val matchIndex = expectedSelections.lastIndexOf(selection)
+    fun recordSelectionUpdate(
+        previousSelection: EditorSelectionRange,
+        selection: EditorSelectionRange,
+    ): Boolean {
+        val pending = expectedSelections.toList()
+        var matchIndex = -1
+        pending.indices.forEach { startIndex ->
+            if (pending[startIndex].previousSelection != previousSelection) return@forEach
+            var cursor = previousSelection
+            for (endIndex in startIndex until pending.size) {
+                val expected = pending[endIndex]
+                if (expected.previousSelection != cursor) break
+                cursor = expected.selection
+                if (cursor == selection) matchIndex = maxOf(matchIndex, endIndex)
+            }
+        }
         if (matchIndex < 0) {
             invalidate()
             return false

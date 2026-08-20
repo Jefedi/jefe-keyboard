@@ -37,33 +37,110 @@ class SuggestionPolicyTest {
     @Test
     fun `external selection invalidates a previously accepted edit`() {
         val gate = SuggestionSessionGate()
-        gate.recordSuccessfulMutation(SuggestionMutation.CHARACTER, EditorSelectionRange(2, 2))
-        assertTrue(gate.recordSelectionUpdate(EditorSelectionRange(2, 2)))
-        assertFalse(gate.recordSelectionUpdate(EditorSelectionRange(0, 0)))
+        gate.recordSuccessfulMutation(
+            SuggestionMutation.CHARACTER,
+            EditorSelectionRange(1, 1),
+            EditorSelectionRange(2, 2),
+        )
+        assertTrue(
+            gate.recordSelectionUpdate(
+                EditorSelectionRange(1, 1),
+                EditorSelectionRange(2, 2),
+            ),
+        )
+        assertFalse(
+            gate.recordSelectionUpdate(
+                EditorSelectionRange(2, 2),
+                EditorSelectionRange(0, 0),
+            ),
+        )
         assertFalse(gate.allowsSuggestionsAt(EditorSelectionRange(0, 0)))
     }
 
     @Test
     fun `two fast edits survive delayed ordered selection callbacks`() {
         val gate = SuggestionSessionGate()
-        gate.recordSuccessfulMutation(SuggestionMutation.CHARACTER, EditorSelectionRange(1, 1))
-        gate.recordSuccessfulMutation(SuggestionMutation.CHARACTER, EditorSelectionRange(2, 2))
+        gate.recordSuccessfulMutation(
+            SuggestionMutation.CHARACTER,
+            EditorSelectionRange(0, 0),
+            EditorSelectionRange(1, 1),
+        )
+        gate.recordSuccessfulMutation(
+            SuggestionMutation.CHARACTER,
+            EditorSelectionRange(1, 1),
+            EditorSelectionRange(2, 2),
+        )
 
-        assertTrue(gate.recordSelectionUpdate(EditorSelectionRange(1, 1)))
-        assertTrue(gate.recordSelectionUpdate(EditorSelectionRange(2, 2)))
+        assertTrue(
+            gate.recordSelectionUpdate(
+                EditorSelectionRange(0, 0),
+                EditorSelectionRange(1, 1),
+            ),
+        )
+        assertTrue(
+            gate.recordSelectionUpdate(
+                EditorSelectionRange(1, 1),
+                EditorSelectionRange(2, 2),
+            ),
+        )
         assertTrue(gate.allowsSuggestionsAt(EditorSelectionRange(2, 2)))
     }
 
     @Test
     fun `coalesced duplicate callback leaves no stale provenance for an external move`() {
         val gate = SuggestionSessionGate()
-        gate.recordSuccessfulMutation(SuggestionMutation.CHARACTER, EditorSelectionRange(1, 1))
-        gate.recordSuccessfulMutation(SuggestionMutation.DELETE, EditorSelectionRange(0, 0))
-        gate.recordSuccessfulMutation(SuggestionMutation.CHARACTER, EditorSelectionRange(1, 1))
+        gate.recordSuccessfulMutation(
+            SuggestionMutation.CHARACTER,
+            EditorSelectionRange(0, 0),
+            EditorSelectionRange(1, 1),
+        )
+        gate.recordSuccessfulMutation(
+            SuggestionMutation.DELETE,
+            EditorSelectionRange(1, 1),
+            EditorSelectionRange(0, 0),
+        )
+        gate.recordSuccessfulMutation(
+            SuggestionMutation.CHARACTER,
+            EditorSelectionRange(0, 0),
+            EditorSelectionRange(1, 1),
+        )
 
-        assertTrue(gate.recordSelectionUpdate(EditorSelectionRange(1, 1)))
-        assertFalse(gate.recordSelectionUpdate(EditorSelectionRange(0, 0)))
+        assertTrue(
+            gate.recordSelectionUpdate(
+                EditorSelectionRange(0, 0),
+                EditorSelectionRange(1, 1),
+            ),
+        )
+        assertFalse(
+            gate.recordSelectionUpdate(
+                EditorSelectionRange(1, 1),
+                EditorSelectionRange(0, 0),
+            ),
+        )
         assertFalse(gate.allowsSuggestionsAt(EditorSelectionRange(0, 0)))
+    }
+
+    @Test
+    fun `coalesced destination from an unrelated origin is external`() {
+        val gate = SuggestionSessionGate()
+        gate.recordSuccessfulMutation(
+            mutation = SuggestionMutation.CHARACTER,
+            previousSelection = EditorSelectionRange(0, 0),
+            selection = EditorSelectionRange(1, 1),
+        )
+        gate.recordSuccessfulMutation(
+            mutation = SuggestionMutation.CHARACTER,
+            previousSelection = EditorSelectionRange(1, 1),
+            selection = EditorSelectionRange(2, 2),
+        )
+
+        assertFalse(
+            gate.recordSelectionUpdate(
+                previousSelection = EditorSelectionRange(9, 9),
+                selection = EditorSelectionRange(2, 2),
+            ),
+        )
+        assertFalse(gate.allowsSuggestionsAt(EditorSelectionRange(2, 2)))
     }
 
     @Test
@@ -74,6 +151,7 @@ class SuggestionPolicyTest {
 
         gate.recordSuccessfulMutation(
             SuggestionMutation.NON_SENSITIVE_PASTE,
+            EditorSelectionRange(0, 0),
             EditorSelectionRange(4, 4),
         )
         assertFalse(gate.allowsSuggestionsAt(EditorSelectionRange(4, 4)))
@@ -81,6 +159,7 @@ class SuggestionPolicyTest {
         gate.startSession()
         gate.recordSuccessfulMutation(
             SuggestionMutation.NON_SENSITIVE_PASTE,
+            EditorSelectionRange(0, 0),
             EditorSelectionRange(5, 5),
         )
         assertTrue(gate.allowsSuggestionsAt(EditorSelectionRange(5, 5)))
@@ -93,11 +172,17 @@ class SuggestionPolicyTest {
         repeat(65) { cursor ->
             gate.recordSuccessfulMutation(
                 SuggestionMutation.CHARACTER,
+                EditorSelectionRange(cursor, cursor),
                 EditorSelectionRange(cursor + 1, cursor + 1),
             )
         }
 
         assertFalse(gate.allowsSuggestionsAt(EditorSelectionRange(65, 65)))
-        assertFalse(gate.recordSelectionUpdate(EditorSelectionRange(1, 1)))
+        assertFalse(
+            gate.recordSelectionUpdate(
+                EditorSelectionRange(0, 0),
+                EditorSelectionRange(1, 1),
+            ),
+        )
     }
 }

@@ -326,6 +326,33 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `synchronous candidate selection callback remains locally owned`() {
+        val connection = SynchronousSelectionCallbackInputConnection(context(), "", 0)
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("j")
+        val candidate = root.railView.suggestionViews().first { it.text == "je" }
+        connection.onAcceptedSelection = { oldSelection, newSelection ->
+            service.onUpdateSelection(
+                oldSelection.start,
+                oldSelection.end,
+                newSelection.start,
+                newSelection.end,
+                -1,
+                -1,
+            )
+        }
+
+        candidate.performClick()
+
+        assertEquals("je ", connection.text())
+        assertEquals(
+            listOf("suis", "vais", "veux"),
+            root.railView.suggestionViews().map { it.text.toString() },
+        )
+        service.onDestroy()
+    }
+
+    @Test
     fun `candidate aborts when its intermediate selection exceeds the callback bound`() {
         val connection = EditableInputConnection(context(), "b", 1)
         val (service, root) = startRootService(connection)
@@ -455,6 +482,32 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `external selection during candidate preflight prevents selection restore or commit`() {
+        val connection = SynchronousCandidateCursorCallbackInputConnection(
+            context(),
+            "b ici",
+            1,
+        )
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+        connection.onCandidateCursorRead = {
+            connection.select(6)
+            service.onUpdateSelection(2, 2, 6, 6, -1, -1)
+        }
+
+        candidate.performClick()
+
+        assertEquals("bo ici", connection.text())
+        assertEquals(6, connection.selectionStart())
+        assertEquals(6, connection.selectionEnd())
+        assertTrue(connection.selectionAttemptsAfterCallback.isEmpty())
+        assertTrue(connection.commitAttemptsAfterCallback.isEmpty())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
     fun `previous enter action is sent to the editor without a newline`() {
         val connection = EditableInputConnection(context(), "texte", 5)
         val (service, root) = startRootService(connection, EditorInfo.IME_ACTION_PREVIOUS)
@@ -503,6 +556,47 @@ class JefeKeyboardServiceTest {
 
         connection.replaceAll("bo", 2)
         service.onUpdateSelection(0, 2, 2, 2, -1, -1)
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `external selection during an accepted local commit adds no provenance at the new cursor`() {
+        val connection = SynchronousCommitCallbackInputConnection(context(), "b b", 1)
+        val (service, root) = startRootService(connection)
+        connection.onAcceptedCommit = {
+            connection.onAcceptedCommit = null
+            connection.select(4)
+            service.onUpdateSelection(2, 2, 4, 4, -1, -1)
+        }
+
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+
+        assertEquals("bo b", connection.text())
+        assertEquals(4, connection.selectionStart())
+        assertEquals(4, connection.selectionEnd())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `external selection during suggestion reads leaves the invalidated rail empty`() {
+        val connection = SynchronousCandidateCursorCallbackInputConnection(
+            context(),
+            "b b",
+            1,
+        )
+        val (service, root) = startRootService(connection)
+        connection.onCandidateCursorRead = {
+            connection.select(4)
+            service.onUpdateSelection(2, 2, 4, 4, -1, -1)
+        }
+
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+
+        assertEquals("bo b", connection.text())
+        assertEquals(4, connection.selectionStart())
+        assertEquals(4, connection.selectionEnd())
         assertTrue(root.railView.suggestionViews().isEmpty())
         service.onDestroy()
     }
@@ -563,6 +657,39 @@ class JefeKeyboardServiceTest {
         assertEquals(0, calls.get())
         assertEquals("bonjour", oldConnection.text())
         assertEquals("nouveau", newConnection.text())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `selection superseded during translation snapshot is never sent remotely`() {
+        val connection = SynchronousExtractedTextCallbackInputConnection(
+            context(),
+            "secret public",
+            0,
+            6,
+        )
+        val remoteInputs = mutableListOf<String>()
+        val service = testService(connection).apply {
+            translation = {
+                remoteInputs += it
+                RemoteResult.Success("translated")
+            }
+        }
+        val root = createRootAndStart(service)
+        connection.onExtractedTextRead = {
+            connection.onExtractedTextRead = null
+            connection.select(7, 13)
+            service.onUpdateSelection(0, 6, 7, 13, -1, -1)
+        }
+
+        requireNotNull(root.keyboardView.onTranslateClick).invoke()
+        drainMainLooper()
+
+        assertTrue(remoteInputs.isEmpty())
+        assertEquals("secret public", connection.text())
+        assertEquals(7, connection.selectionStart())
+        assertEquals(13, connection.selectionEnd())
         assertFalse(root.railView.state is TopRailState.Translation)
         service.onDestroy()
     }
@@ -1575,6 +1702,65 @@ private class SynchronousSelectedTextCallbackInputConnection(
     }
 }
 
+private class SynchronousExtractedTextCallbackInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+    selectionEnd: Int = selectionStart,
+) : EditableInputConnection(context, text, selectionStart, selectionEnd) {
+    var onExtractedTextRead: (() -> Unit)? = null
+
+    override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
+        val extractedText = super.getExtractedText(request, flags)
+        onExtractedTextRead?.invoke()
+        return extractedText
+    }
+}
+
+private class SynchronousCandidateCursorCallbackInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+    selectionEnd: Int = selectionStart,
+) : EditableInputConnection(context, text, selectionStart, selectionEnd) {
+    var onCandidateCursorRead: (() -> Unit)? = null
+    val selectionAttemptsAfterCallback = mutableListOf<EditorSelectionRange>()
+    val commitAttemptsAfterCallback = mutableListOf<String>()
+    private var callbackOnNextExtractedTextRead = false
+    private var callbackDelivered = false
+
+    override fun getTextBeforeCursor(length: Int, flags: Int): CharSequence? {
+        val text = super.getTextBeforeCursor(length, flags)
+        if (onCandidateCursorRead != null) callbackOnNextExtractedTextRead = true
+        return text
+    }
+
+    override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? {
+        val extractedText = super.getExtractedText(request, flags)
+        if (callbackOnNextExtractedTextRead) {
+            callbackOnNextExtractedTextRead = false
+            callbackDelivered = true
+            onCandidateCursorRead?.also { callback ->
+                onCandidateCursorRead = null
+                callback()
+            }
+        }
+        return extractedText
+    }
+
+    override fun setSelection(start: Int, end: Int): Boolean {
+        if (callbackDelivered) {
+            selectionAttemptsAfterCallback += EditorSelectionRange(start, end)
+        }
+        return super.setSelection(start, end)
+    }
+
+    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        if (callbackDelivered) commitAttemptsAfterCallback += text?.toString().orEmpty()
+        return super.commitText(text, newCursorPosition)
+    }
+}
+
 private class SelectionReportingInputConnection(
     context: Context,
     text: String,
@@ -1634,6 +1820,27 @@ private class SelectionReportingInputConnection(
                 -1,
             )
         }
+    }
+}
+
+private class SynchronousSelectionCallbackInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+    selectionEnd: Int = selectionStart,
+) : EditableInputConnection(context, text, selectionStart, selectionEnd) {
+    var onAcceptedSelection: ((EditorSelectionRange, EditorSelectionRange) -> Unit)? = null
+
+    override fun setSelection(start: Int, end: Int): Boolean {
+        val oldSelection = EditorSelectionRange(selectionStart(), selectionEnd())
+        val accepted = super.setSelection(start, end)
+        if (accepted) {
+            onAcceptedSelection?.also { callback ->
+                onAcceptedSelection = null
+                callback(oldSelection, EditorSelectionRange(start, end))
+            }
+        }
+        return accepted
     }
 }
 

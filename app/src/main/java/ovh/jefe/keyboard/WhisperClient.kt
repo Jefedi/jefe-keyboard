@@ -8,6 +8,7 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -18,8 +19,10 @@ class WhisperClient(
     private val url: String,
     private val apiKey: String,
     private val model: String,
-    private val client: OkHttpClient = defaultClient(),
+    client: OkHttpClient = defaultClient(),
 ) {
+    private val client = client.enforceHttpsTransport()
+
     private companion object {
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
@@ -66,10 +69,19 @@ class WhisperClient(
 
             client.newCall(requestBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) {
-                    RemoteResult.Failure(
-                        "Le serveur de transcription a répondu avec le code ${response.code}. " +
-                            "Vérifiez son adresse et sa configuration.",
-                    )
+                    val redirect = response.header("Location")
+                        ?.let(response.request.url::resolve)
+                    if (response.isRedirect && redirect?.isHttps == false) {
+                        RemoteResult.Failure(
+                            "Redirection non sécurisée refusée. " +
+                                "Configurez une destination HTTPS.",
+                        )
+                    } else {
+                        RemoteResult.Failure(
+                            "Le serveur de transcription a répondu avec le code ${response.code}. " +
+                                "Vérifiez son adresse et sa configuration.",
+                        )
+                    }
                 } else {
                     val text = JSONObject(response.body?.string().orEmpty())
                         .optString("text", "")
@@ -83,6 +95,10 @@ class WhisperClient(
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: InsecureTransportException) {
+            RemoteResult.Failure(e.message.orEmpty(), e)
         } catch (e: Exception) {
             RemoteResult.Failure(
                 "Réponse du serveur de transcription invalide ou inaccessible. " +

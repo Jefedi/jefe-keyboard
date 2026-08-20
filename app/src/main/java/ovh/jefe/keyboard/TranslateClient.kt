@@ -5,6 +5,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 
 /**
@@ -17,8 +18,10 @@ class TranslateClient(
     private val apiKey: String,
     private val sourceLang: String,
     private val targetLang: String,
-    private val client: OkHttpClient = defaultClient(),
+    client: OkHttpClient = defaultClient(),
 ) {
+    private val client = client.enforceHttpsTransport()
+
     private companion object {
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -57,10 +60,19 @@ class TranslateClient(
 
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    RemoteResult.Failure(
-                        "Le serveur de traduction a répondu avec le code ${response.code}. " +
-                            "Vérifiez son adresse et sa configuration.",
-                    )
+                    val redirect = response.header("Location")
+                        ?.let(response.request.url::resolve)
+                    if (response.isRedirect && redirect?.isHttps == false) {
+                        RemoteResult.Failure(
+                            "Redirection non sécurisée refusée. " +
+                                "Configurez une destination HTTPS.",
+                        )
+                    } else {
+                        RemoteResult.Failure(
+                            "Le serveur de traduction a répondu avec le code ${response.code}. " +
+                                "Vérifiez son adresse et sa configuration.",
+                        )
+                    }
                 } else {
                     val translatedText = JSONObject(response.body?.string().orEmpty())
                         .optString("translatedText", "")
@@ -73,6 +85,10 @@ class TranslateClient(
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: InsecureTransportException) {
+            RemoteResult.Failure(e.message.orEmpty(), e)
         } catch (e: Exception) {
             RemoteResult.Failure(
                 "Réponse du serveur de traduction invalide ou inaccessible. " +

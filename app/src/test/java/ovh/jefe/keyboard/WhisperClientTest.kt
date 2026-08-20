@@ -7,12 +7,16 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.nio.file.Files
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
@@ -96,6 +100,66 @@ class WhisperClientTest {
 
                 assertTrue(result is RemoteResult.Failure)
             }
+        } finally {
+            audioFile.delete()
+        }
+    }
+
+    @Test
+    fun `does not follow a Whisper redirect from HTTPS to HTTP`() {
+        val cleartextServer = MockWebServer()
+        cleartextServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"text":"Audio divulgué"}"""),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(302)
+                .setHeader("Location", cleartextServer.url("/leak")),
+        )
+        val audioFile = Files.createTempFile("jefe-whisper", ".m4a").toFile()
+        audioFile.writeText("contenu-audio")
+        val client = WhisperClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            model = "whisper-1",
+            client = trustedClient,
+        )
+
+        try {
+            val result = client.transcribe(audioFile, language = "fr")
+
+            assertTrue(result is RemoteResult.Failure)
+            assertTrue((result as RemoteResult.Failure).message.contains("HTTPS"))
+            assertNull(cleartextServer.takeRequest(250, TimeUnit.MILLISECONDS))
+        } finally {
+            audioFile.delete()
+            cleartextServer.shutdown()
+        }
+    }
+
+    @Test
+    fun `rethrows Whisper cancellation`() {
+        val cancellation = CancellationException("transcription annulée")
+        val cancellingClient = trustedClient.newBuilder()
+            .addInterceptor { throw cancellation }
+            .build()
+        val audioFile = Files.createTempFile("jefe-whisper", ".m4a").toFile()
+        audioFile.writeText("contenu-audio")
+        val client = WhisperClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            model = "whisper-1",
+            client = cancellingClient,
+        )
+
+        try {
+            val thrown = assertThrows(CancellationException::class.java) {
+                client.transcribe(audioFile, language = "fr")
+            }
+
+            assertSame(cancellation, thrown)
         } finally {
             audioFile.delete()
         }

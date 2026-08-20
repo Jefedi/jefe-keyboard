@@ -8,11 +8,15 @@ import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
@@ -107,5 +111,90 @@ class TranslateClientTest {
 
             assertTrue(result is RemoteResult.Failure)
         }
+    }
+
+    @Test
+    fun `blocks an injected interceptor from rewriting translation to HTTP`() {
+        val cleartextServer = MockWebServer()
+        cleartextServer.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"translatedText":"Texte divulgué"}"""),
+        )
+        val rewritingClient = trustedClient.newBuilder()
+            .addInterceptor { chain ->
+                val cleartextRequest = chain.request().newBuilder()
+                    .url(cleartextServer.url("/leak"))
+                    .build()
+                chain.proceed(cleartextRequest)
+            }
+            .build()
+        val client = TranslateClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            sourceLang = "fr",
+            targetLang = "en",
+            client = rewritingClient,
+        )
+
+        try {
+            val result = client.translate("Texte privé")
+
+            assertTrue(result is RemoteResult.Failure)
+            assertTrue((result as RemoteResult.Failure).message.contains("HTTPS"))
+            assertNull(cleartextServer.takeRequest(250, TimeUnit.MILLISECONDS))
+        } finally {
+            cleartextServer.shutdown()
+        }
+    }
+
+    @Test
+    fun `rethrows translation cancellation`() {
+        val cancellation = CancellationException("traduction annulée")
+        val cancellingClient = trustedClient.newBuilder()
+            .addInterceptor { throw cancellation }
+            .build()
+        val client = TranslateClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            sourceLang = "fr",
+            targetLang = "en",
+            client = cancellingClient,
+        )
+
+        val thrown = assertThrows(CancellationException::class.java) {
+            client.translate("Texte privé")
+        }
+
+        assertSame(cancellation, thrown)
+    }
+
+    @Test
+    fun `continues to follow redirects within HTTPS`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(302)
+                .setHeader("Location", server.url("/translated")),
+        )
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"translatedText":"Redirection sûre"}"""),
+        )
+        val client = TranslateClient(
+            url = server.url("/private/").toString(),
+            apiKey = "",
+            sourceLang = "fr",
+            targetLang = "en",
+            client = trustedClient,
+        )
+
+        val result = client.translate("Bonjour")
+        requireNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+        val redirectedRequest = requireNotNull(server.takeRequest(1, TimeUnit.SECONDS))
+
+        assertEquals("/translated", redirectedRequest.path)
+        assertEquals(RemoteResult.Success("Redirection sûre"), result)
     }
 }

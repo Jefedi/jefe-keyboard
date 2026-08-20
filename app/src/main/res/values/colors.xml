@@ -15,12 +15,14 @@
     <color name="key_pressed">#B9CEE1</color>
     <color name="key_outline">#D4DFE8</color>
     <color name="suggestion_bg">#FFFFFF</color>
+    <color name="suggestion_pressed">#DCE9F8</color>
     <color name="suggestion_text">@color/ink</color>
     <color name="suggestion_outline">#D4DFE8</color>
     <color name="recording_red">#C6283D</color>
     <color name="action_pressed">#184FC6</color>
     <color name="on_action">#FFFFFF</color>
     <color name="mic_icon">@color/ink</color>
+    <color name="mic_pressed_icon">@color/ink</color>
 
     <color name="settings_surface">@color/porcelain</color>
     <color name="settings_header_surface">#E6F8F5</color>

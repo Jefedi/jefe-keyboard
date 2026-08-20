@@ -55,6 +55,11 @@ class SettingsActivity : AppCompatActivity(),
         refreshSetup()
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && ::preferences.isInitialized) refreshSetup()
+    }
+
     override fun onStop() {
         preferences.unregisterOnSharedPreferenceChangeListener(this)
         super.onStop()

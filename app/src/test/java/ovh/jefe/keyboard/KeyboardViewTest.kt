@@ -2,6 +2,7 @@ package ovh.jefe.keyboard
 
 import android.app.Activity
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Looper
@@ -9,11 +10,13 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import androidx.core.graphics.ColorUtils
 import java.io.File
 import java.io.FileOutputStream
 import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -91,6 +94,42 @@ class KeyboardViewTest {
     }
 
     @Test
+    fun `releasing outside without a move event cancels the key`() {
+        val committed = mutableListOf<String>()
+        view.onKeyChar = committed::add
+        val q = view.renderedKeys().single {
+            it.action == KeyboardView.KeyAction.CHAR && it.label == "q"
+        }
+
+        view.onTouchEvent(down(q.centerX, q.centerY))
+        view.onTouchEvent(up(-20f, -20f))
+
+        assertTrue(committed.isEmpty())
+        assertEquals(0, view.clickCount)
+        assertEquals(0, view.hapticCount)
+    }
+
+    @Test
+    fun `leaving the accent corridor permanently cancels the long press`() {
+        val committed = mutableListOf<String>()
+        view.onKeyChar = committed::add
+        val e = view.renderedKeys().single {
+            it.action == KeyboardView.KeyAction.CHAR && it.label == "e"
+        }
+
+        view.onTouchEvent(down(e.centerX, e.centerY))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(450))
+        val acute = view.renderedAccentOptions().single { it.label == "é" }
+        view.onTouchEvent(move(-20f, -20f))
+        view.onTouchEvent(move(acute.centerX, acute.centerY))
+        view.onTouchEvent(up(acute.centerX, acute.centerY))
+
+        assertTrue(committed.isEmpty())
+        assertEquals(0, view.clickCount)
+        assertEquals(0, view.hapticCount)
+    }
+
+    @Test
     fun `cancelled touch cannot commit on a later release`() {
         val committed = mutableListOf<String>()
         view.onKeyChar = committed::add
@@ -153,16 +192,62 @@ class KeyboardViewTest {
     }
 
     @Test
+    fun `pressed suggestion capsule has visible feedback`() {
+        view.suggestions = listOf("bonjour", "bonsoir", "bonne")
+        val suggestion = view.renderedSuggestions().first()
+
+        view.onTouchEvent(down(suggestion.centerX, suggestion.centerY))
+        val pressed = view.renderedSuggestions().first()
+
+        assertNotEquals(suggestion.backgroundColor, pressed.backgroundColor)
+        view.onTouchEvent(cancel(suggestion.centerX, suggestion.centerY))
+    }
+
+    @Test
+    fun `night pressed mic and enter keep accessible foreground contrast`() {
+        val darkConfiguration = Configuration(view.resources.configuration).apply {
+            uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                Configuration.UI_MODE_NIGHT_YES
+        }
+        val darkView = TrackingKeyboardView(view.context.createConfigurationContext(darkConfiguration)).apply {
+            enterAction = EditorInfo.IME_ACTION_SEND
+        }
+        layout(darkView)
+
+        val mic = darkView.renderedKeys().single { it.action == KeyboardView.KeyAction.MIC }
+        darkView.onTouchEvent(down(mic.centerX, mic.centerY))
+        val pressedMic = darkView.renderedKeys().single { it.action == KeyboardView.KeyAction.MIC }
+        assertTrue(ColorUtils.calculateContrast(pressedMic.foregroundColor, pressedMic.backgroundColor) >= 4.5)
+        darkView.onTouchEvent(cancel(mic.centerX, mic.centerY))
+
+        val enter = darkView.renderedKeys().single { it.action == KeyboardView.KeyAction.ENTER }
+        darkView.onTouchEvent(down(enter.centerX, enter.centerY))
+        val pressedEnter = darkView.renderedKeys().single { it.action == KeyboardView.KeyAction.ENTER }
+        assertTrue(ColorUtils.calculateContrast(pressedEnter.foregroundColor, pressedEnter.backgroundColor) >= 4.5)
+        darkView.onTouchEvent(cancel(enter.centerX, enter.centerY))
+    }
+
+    @Test
     fun `render light and recording keyboard screenshots`() {
-        val output = System.getenv("VISUAL_OUTPUT_DIR")?.let(::File) ?: return
-        output.mkdirs()
+        val output = System.getenv("VISUAL_OUTPUT_DIR")?.let(::File)
+        output?.mkdirs()
 
         view.suggestions = listOf("bonjour", "bonsoir", "bonne")
         view.enterAction = EditorInfo.IME_ACTION_SEND
-        render(view, File(output, "keyboard-light.png"))
+        render(view, output?.resolve("keyboard-light.png"))
 
         view.isRecording = true
-        render(view, File(output, "keyboard-recording.png"))
+        render(view, output?.resolve("keyboard-recording.png"))
+
+        val darkConfiguration = Configuration(view.resources.configuration).apply {
+            uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                Configuration.UI_MODE_NIGHT_YES
+        }
+        val darkView = TrackingKeyboardView(view.context.createConfigurationContext(darkConfiguration)).apply {
+            suggestions = listOf("bonjour", "bonsoir", "bonne")
+            enterAction = EditorInfo.IME_ACTION_SEND
+        }
+        render(darkView, output?.resolve("keyboard-dark.png"))
     }
 
     private fun tap(x: Float, y: Float) {
@@ -178,13 +263,15 @@ class KeyboardViewTest {
         target.layout(0, 0, 1080, target.measuredHeight)
     }
 
-    private fun render(target: View, file: File) {
+    private fun render(target: View, file: File?) {
         layout(target)
         val bitmap = Bitmap.createBitmap(target.width, target.height, Bitmap.Config.ARGB_8888)
         target.draw(Canvas(bitmap))
         assertHasVisualContent(bitmap)
-        FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        assertTrue(file.length() > 0)
+        file?.let {
+            FileOutputStream(it).use { stream -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream) }
+            assertTrue(it.length() > 0)
+        }
     }
 
     private fun assertHasVisualContent(bitmap: Bitmap) {

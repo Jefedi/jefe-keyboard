@@ -93,6 +93,8 @@ open class KeyboardView @JvmOverloads constructor(
         val bottom: Float,
         val hasIcon: Boolean,
         val textSizePx: Float,
+        val backgroundColor: Int,
+        val foregroundColor: Int,
     ) {
         val centerX: Float get() = (left + right) / 2f
         val centerY: Float get() = (top + bottom) / 2f
@@ -192,6 +194,7 @@ open class KeyboardView @JvmOverloads constructor(
     private val pressedPaint = paint(R.color.key_pressed)
     private val outlinePaint = paint(R.color.key_outline, Paint.Style.STROKE).apply { strokeWidth = dp(1) }
     private val suggestionPaint = paint(R.color.suggestion_bg)
+    private val suggestionPressedPaint = paint(R.color.suggestion_pressed)
     private val suggestionOutlinePaint = paint(R.color.suggestion_outline, Paint.Style.STROKE).apply {
         strokeWidth = dp(1)
     }
@@ -232,6 +235,7 @@ open class KeyboardView @JvmOverloads constructor(
     }
     private val iconDefaultColor = ContextCompat.getColor(context, R.color.key_text)
     private val iconMicColor = ContextCompat.getColor(context, R.color.mic_icon)
+    private val iconMicPressedColor = ContextCompat.getColor(context, R.color.mic_pressed_icon)
     private val iconRecordingColor = ContextCompat.getColor(context, R.color.on_action)
     private val micIcon = drawable(R.drawable.ic_mic)
     private val translateIcon = drawable(R.drawable.ic_translate)
@@ -306,7 +310,12 @@ open class KeyboardView @JvmOverloads constructor(
         if (computedKeys.isEmpty()) computeLayout()
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), surfacePaint)
         computedSuggestions.forEachIndexed { index, key ->
-            canvas.drawRoundRect(key.rect, capsuleCorner, capsuleCorner, suggestionPaint)
+            val background = if (key == pressedKey && !gestureCancelled) {
+                suggestionPressedPaint
+            } else {
+                suggestionPaint
+            }
+            canvas.drawRoundRect(key.rect, capsuleCorner, capsuleCorner, background)
             canvas.drawRoundRect(key.rect, capsuleCorner, capsuleCorner, suggestionOutlinePaint)
             suggestions.getOrNull(index)?.let { suggestion ->
                 canvas.drawText(suggestion, key.rect.centerX(), textBaseline(key.rect, suggestionTextPaint), suggestionTextPaint)
@@ -317,15 +326,7 @@ open class KeyboardView @JvmOverloads constructor(
     }
 
     private fun drawKey(canvas: Canvas, key: ComputedKey, pressed: Boolean) {
-        val background = when {
-            key.def.action == KeyAction.ENTER -> if (pressed) actionPressedPaint else actionPaint
-            key.def.action == KeyAction.MIC && isRecording -> if (pressed) actionPressedPaint else recordingPaint
-            key.def.action == KeyAction.MIC -> if (pressed) pressedPaint else microphonePaint
-            key.def.action == KeyAction.SHIFT && isShifted -> if (pressed) actionPressedPaint else shiftPaint
-            pressed -> pressedPaint
-            key.def.isSpecial -> specialPaint
-            else -> keyPaint
-        }
+        val background = backgroundPaintFor(key.def, pressed)
         canvas.drawRoundRect(key.rect, keyCorner, keyCorner, background)
         if (!pressed && key.def.action !in setOf(KeyAction.ENTER, KeyAction.MIC) &&
             !(key.def.action == KeyAction.SHIFT && isShifted)
@@ -338,18 +339,32 @@ open class KeyboardView @JvmOverloads constructor(
             null -> null
         }
         if (icon != null) {
-            val color = when {
-                key.def.action == KeyAction.MIC && isRecording -> iconRecordingColor
-                key.def.action == KeyAction.MIC -> iconMicColor
-                else -> iconDefaultColor
-            }
-            drawIcon(canvas, icon, key.rect, color)
+            drawIcon(canvas, icon, key.rect, foregroundColorFor(key.def, pressed))
             return
         }
         val label = displayLabel(key.def)
         if (label.isEmpty()) return
         val text = textPaintFor(key.def)
         canvas.drawText(label, key.rect.centerX(), textBaseline(key.rect, text), text)
+    }
+
+    private fun backgroundPaintFor(definition: KeyDef, pressed: Boolean): Paint = when {
+        definition.action == KeyAction.ENTER -> if (pressed) actionPressedPaint else actionPaint
+        definition.action == KeyAction.MIC && isRecording -> if (pressed) actionPressedPaint else recordingPaint
+        definition.action == KeyAction.MIC -> if (pressed) pressedPaint else microphonePaint
+        definition.action == KeyAction.SHIFT && isShifted -> if (pressed) actionPressedPaint else shiftPaint
+        pressed -> pressedPaint
+        definition.isSpecial -> specialPaint
+        else -> keyPaint
+    }
+
+    private fun foregroundColorFor(definition: KeyDef, pressed: Boolean): Int = when {
+        definition.iconType == IconType.MIC && isRecording -> iconRecordingColor
+        definition.iconType == IconType.MIC && pressed -> iconMicPressedColor
+        definition.iconType == IconType.MIC -> iconMicColor
+        definition.iconType != null -> iconDefaultColor
+        definition.action == KeyAction.SUGGESTION -> suggestionTextPaint.color
+        else -> textPaintFor(definition).color
     }
 
     private fun textPaintFor(definition: KeyDef): Paint = when {
@@ -394,7 +409,12 @@ open class KeyboardView @JvmOverloads constructor(
 
     private fun updateGesture(x: Float, y: Float) {
         val pressed = pressedKey ?: return
-        if (!longPressTriggered && !pressed.rect.contains(x, y)) cancelGesture()
+        val insideAllowedArea = if (longPressTriggered) {
+            accentGestureBounds(pressed).contains(x, y)
+        } else {
+            pressed.rect.contains(x, y)
+        }
+        if (!insideAllowedArea) cancelGesture()
     }
 
     private fun finishGesture(x: Float, y: Float) {
@@ -402,13 +422,17 @@ open class KeyboardView @JvmOverloads constructor(
         var succeeded = false
         if (!gestureCancelled) {
             succeeded = if (!longPressTriggered) {
-                pressedKey?.let(::handleKey) == true
+                pressedKey?.takeIf { it.rect.contains(x, y) }?.let(::handleKey) == true
             } else {
                 commitAccentAt(x, y)
             }
         }
         if (succeeded) notifySuccessfulInteraction()
         clearGestureState()
+    }
+
+    private fun accentGestureBounds(pressed: ComputedKey): RectF = RectF(pressed.rect).apply {
+        accentPopupRects.forEach(::union)
     }
 
     private fun commitAccentAt(x: Float, y: Float): Boolean {
@@ -551,20 +575,29 @@ open class KeyboardView @JvmOverloads constructor(
         }
     }
 
-    private fun ComputedKey.toRenderedControl(label: String) = RenderedControl(
-        action = def.action,
-        label = label,
-        left = rect.left,
-        top = rect.top,
-        right = rect.right,
-        bottom = rect.bottom,
-        hasIcon = def.iconType != null,
-        textSizePx = when {
-            def.iconType != null || label.isEmpty() -> 0f
-            def.action == KeyAction.SUGGESTION -> suggestionTextPaint.textSize
-            else -> textPaintFor(def).textSize
-        },
-    )
+    private fun ComputedKey.toRenderedControl(label: String): RenderedControl {
+        val pressed = this == pressedKey && !gestureCancelled
+        return RenderedControl(
+            action = def.action,
+            label = label,
+            left = rect.left,
+            top = rect.top,
+            right = rect.right,
+            bottom = rect.bottom,
+            hasIcon = def.iconType != null,
+            textSizePx = when {
+                def.iconType != null || label.isEmpty() -> 0f
+                def.action == KeyAction.SUGGESTION -> suggestionTextPaint.textSize
+                else -> textPaintFor(def).textSize
+            },
+            backgroundColor = if (def.action == KeyAction.SUGGESTION) {
+                if (pressed) suggestionPressedPaint.color else suggestionPaint.color
+            } else {
+                backgroundPaintFor(def, pressed).color
+            },
+            foregroundColor = foregroundColorFor(def, pressed),
+        )
+    }
 
     private fun textBaseline(rect: RectF, paint: Paint): Float =
         rect.centerY() - (paint.fontMetrics.ascent + paint.fontMetrics.descent) / 2f

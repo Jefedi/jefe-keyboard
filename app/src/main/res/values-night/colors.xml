@@ -7,10 +7,13 @@
     <color name="key_pressed">#3A506D</color>
     <color name="key_outline">#2D405A</color>
     <color name="suggestion_bg">#172235</color>
+    <color name="suggestion_pressed">#30445F</color>
     <color name="suggestion_text">#F4F7FA</color>
     <color name="suggestion_outline">#2D405A</color>
-    <color name="action_pressed">#4C7DF0</color>
+    <color name="action_pressed">#1E40AF</color>
     <color name="mic_icon">@color/ink</color>
+    <color name="mic_pressed_icon">#FFFFFF</color>
+    <color name="slate">#CBD5E1</color>
 
     <color name="settings_surface">@color/night</color>
     <color name="settings_header_surface">#143634</color>

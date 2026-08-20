@@ -1,6 +1,7 @@
 package ovh.jefe.keyboard
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Looper
@@ -15,6 +16,7 @@ import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.test.core.app.ApplicationProvider
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import java.io.File
 import java.io.FileOutputStream
 import org.junit.Assert.assertEquals
@@ -39,6 +41,7 @@ class SettingsActivityTest {
     fun clearPreferences() {
         context = ApplicationProvider.getApplicationContext()
         PreferenceManager.getDefaultSharedPreferences(context).edit().clear().commit()
+        Settings.Secure.putString(context.contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD, null)
     }
 
     @Test
@@ -107,6 +110,45 @@ class SettingsActivityTest {
     }
 
     @Test
+    fun `setup refreshes when focus returns from the input method picker`() {
+        val controller = Robolectric.buildActivity(SettingsActivity::class.java)
+        val uncreatedActivity = controller.get()
+        uncreatedActivity.onWindowFocusChanged(true)
+
+        val activity = controller.setup().get().also {
+            it.supportFragmentManager.executePendingTransactions()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+        }
+        val progress = activity.findViewById<TextView>(R.id.setup_progress_text)
+        val defaultRow = settingsFragment(activity).findPreference<Preference>("setup_default_ime")
+        assertEquals("0 sur 5 étapes terminées", progress.text.toString())
+
+        activity.onWindowFocusChanged(false)
+        Settings.Secure.putString(
+            activity.contentResolver,
+            Settings.Secure.DEFAULT_INPUT_METHOD,
+            "${activity.packageName}/.JefeKeyboardService",
+        )
+        activity.onWindowFocusChanged(true)
+
+        assertEquals("1 sur 5 étapes terminées", progress.text.toString())
+        assertEquals("✅ Configuré", defaultRow?.summary)
+    }
+
+    @Test
+    fun `night setup header secondary copy meets contrast target`() {
+        val darkConfiguration = Configuration(context.resources.configuration).apply {
+            uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or
+                Configuration.UI_MODE_NIGHT_YES
+        }
+        val darkContext = context.createConfigurationContext(darkConfiguration)
+        val copy = ContextCompat.getColor(darkContext, R.color.slate)
+        val surface = ContextCompat.getColor(darkContext, R.color.settings_header_surface)
+
+        assertTrue(ColorUtils.calculateContrast(copy, surface) >= 4.5)
+    }
+
+    @Test
     fun `API key summaries never render stored secrets`() {
         val secret = "top-secret-value"
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -169,8 +211,8 @@ class SettingsActivityTest {
 
     @Test
     fun `render settings screenshot`() {
-        val output = System.getenv("VISUAL_OUTPUT_DIR")?.let(::File) ?: return
-        output.mkdirs()
+        val output = System.getenv("VISUAL_OUTPUT_DIR")?.let(::File)
+        output?.mkdirs()
         PreferenceManager.getDefaultSharedPreferences(context)
             .edit()
             .putString("whisper_url", "https://voice.example.test/")
@@ -184,9 +226,10 @@ class SettingsActivityTest {
         val bitmap = Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888)
         decor.draw(Canvas(bitmap))
         assertHasVisualContent(bitmap)
-        val file = File(output, "settings.png")
-        FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        assertTrue(file.length() > 0)
+        output?.resolve("settings.png")?.let { file ->
+            FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            assertTrue(file.length() > 0)
+        }
     }
 
     private fun createActivity(): SettingsActivity =

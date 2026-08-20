@@ -45,15 +45,27 @@ internal class SuggestionSessionGate {
             -> true
         }
         eligible = !sensitivePasteTaint && supported && selection?.isCollapsed == true
-        if (selection == null || expectedSelections.size == MAX_PENDING_SELECTIONS) {
+        if (selection == null || !enqueueExpectedSelection(selection)) {
             invalidate()
             return
         }
+    }
+
+    fun recordExpectedSelection(selection: EditorSelectionRange) {
+        enqueueExpectedSelection(selection)
+    }
+
+    private fun enqueueExpectedSelection(selection: EditorSelectionRange): Boolean {
+        if (expectedSelections.size == MAX_PENDING_SELECTIONS) {
+            invalidate()
+            return false
+        }
         expectedSelections.addLast(selection)
+        return true
     }
 
     fun recordSelectionUpdate(selection: EditorSelectionRange): Boolean {
-        val matchIndex = expectedSelections.indexOf(selection)
+        val matchIndex = expectedSelections.lastIndexOf(selection)
         if (matchIndex < 0) {
             invalidate()
             return false

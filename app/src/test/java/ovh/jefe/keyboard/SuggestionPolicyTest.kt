@@ -55,6 +55,18 @@ class SuggestionPolicyTest {
     }
 
     @Test
+    fun `coalesced duplicate callback leaves no stale provenance for an external move`() {
+        val gate = SuggestionSessionGate()
+        gate.recordSuccessfulMutation(SuggestionMutation.CHARACTER, EditorSelectionRange(1, 1))
+        gate.recordSuccessfulMutation(SuggestionMutation.DELETE, EditorSelectionRange(0, 0))
+        gate.recordSuccessfulMutation(SuggestionMutation.CHARACTER, EditorSelectionRange(1, 1))
+
+        assertTrue(gate.recordSelectionUpdate(EditorSelectionRange(1, 1)))
+        assertFalse(gate.recordSelectionUpdate(EditorSelectionRange(0, 0)))
+        assertFalse(gate.allowsSuggestionsAt(EditorSelectionRange(0, 0)))
+    }
+
+    @Test
     fun `sensitive taint survives local edits and resets only for the next session`() {
         val gate = SuggestionSessionGate()
         gate.startSession()

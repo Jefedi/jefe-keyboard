@@ -176,6 +176,30 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `candidate selection and commit callbacks preserve the new context`() {
+        val connection = SelectionReportingInputConnection(context(), "", 0)
+        val (service, root) = startRootService(connection)
+        root.keyboardView.onKeyChar?.invoke("j")
+        connection.dispatchSelectionUpdates(service)
+        val candidate = root.railView.suggestionViews().first { it.text == "je" }
+
+        candidate.performClick()
+        assertEquals("je ", connection.text())
+        assertEquals(
+            listOf("suis", "vais", "veux"),
+            root.railView.suggestionViews().map { it.text.toString() },
+        )
+
+        connection.dispatchSelectionUpdates(service)
+
+        assertEquals(
+            listOf("suis", "vais", "veux"),
+            root.railView.suggestionViews().map { it.text.toString() },
+        )
+        service.onDestroy()
+    }
+
+    @Test
     fun `candidate commit failure leaves the original token intact with one atomic replacement`() {
         val connection = RejectingSuggestionInputConnection(context(), "b", 1)
         val (service, root) = startRootService(connection)
@@ -816,6 +840,68 @@ private class RejectingCommitInputConnection(
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         commitAttempts += text?.toString().orEmpty()
         return false
+    }
+}
+
+private class SelectionReportingInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+    selectionEnd: Int = selectionStart,
+) : EditableInputConnection(context, text, selectionStart, selectionEnd) {
+    private data class SelectionUpdate(
+        val oldStart: Int,
+        val oldEnd: Int,
+        val newStart: Int,
+        val newEnd: Int,
+    )
+
+    private val pendingSelectionUpdates = mutableListOf<SelectionUpdate>()
+    private var committing = false
+
+    override fun setSelection(start: Int, end: Int): Boolean {
+        val oldStart = selectionStart()
+        val oldEnd = selectionEnd()
+        val success = super.setSelection(start, end)
+        if (success && !committing) {
+            pendingSelectionUpdates += SelectionUpdate(oldStart, oldEnd, start, end)
+        }
+        return success
+    }
+
+    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        val oldStart = selectionStart()
+        val oldEnd = selectionEnd()
+        committing = true
+        val success = try {
+            super.commitText(text, newCursorPosition)
+        } finally {
+            committing = false
+        }
+        if (success) {
+            pendingSelectionUpdates += SelectionUpdate(
+                oldStart,
+                oldEnd,
+                selectionStart(),
+                selectionEnd(),
+            )
+        }
+        return success
+    }
+
+    fun dispatchSelectionUpdates(service: JefeKeyboardService) {
+        val updates = pendingSelectionUpdates.toList()
+        pendingSelectionUpdates.clear()
+        updates.forEach { update ->
+            service.onUpdateSelection(
+                update.oldStart,
+                update.oldEnd,
+                update.newStart,
+                update.newEnd,
+                -1,
+                -1,
+            )
+        }
     }
 }
 

@@ -254,7 +254,11 @@ open class JefeKeyboardService : InputMethodService() {
         if (cursor != snapshot.absoluteCursor) return
         val tokenStart = cursor - currentWord.length
         if (tokenStart < 0 || !connection.setSelection(tokenStart, cursor)) return
-        suggestionGate.recordExpectedSelection(EditorSelectionRange(tokenStart, cursor))
+        if (!suggestionGate.recordExpectedSelection(EditorSelectionRange(tokenStart, cursor))) {
+            restoreCollapsedSelection(connection, cursor, tokenStart)
+            invalidateSuggestions()
+            return
+        }
 
         if (!connection.commitText("$word ", 1)) {
             restoreCollapsedSelection(connection, cursor, tokenStart)

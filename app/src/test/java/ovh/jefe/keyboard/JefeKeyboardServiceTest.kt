@@ -200,6 +200,31 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `candidate aborts when its intermediate selection exceeds the callback bound`() {
+        val connection = EditableInputConnection(context(), "b", 1)
+        val (service, root) = startRootService(connection)
+        repeat(32) {
+            root.keyboardView.onKeyChar?.invoke("o")
+            root.keyboardView.onKeyDelete?.invoke()
+        }
+        assertEquals("b", connection.text())
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+
+        candidate.performClick()
+
+        assertEquals("b", connection.text())
+        assertEquals(1, connection.selectionStart())
+        assertEquals(1, connection.selectionEnd())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+
+        root.keyboardView.onKeyChar?.invoke("o")
+
+        assertEquals("bo", connection.text())
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
+        service.onDestroy()
+    }
+
+    @Test
     fun `candidate commit failure leaves the original token intact with one atomic replacement`() {
         val connection = RejectingSuggestionInputConnection(context(), "b", 1)
         val (service, root) = startRootService(connection)

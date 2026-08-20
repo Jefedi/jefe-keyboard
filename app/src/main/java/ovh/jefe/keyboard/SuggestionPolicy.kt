@@ -51,9 +51,8 @@ internal class SuggestionSessionGate {
         }
     }
 
-    fun recordExpectedSelection(selection: EditorSelectionRange) {
+    fun recordExpectedSelection(selection: EditorSelectionRange): Boolean =
         enqueueExpectedSelection(selection)
-    }
 
     private fun enqueueExpectedSelection(selection: EditorSelectionRange): Boolean {
         if (expectedSelections.size == MAX_PENDING_SELECTIONS) {

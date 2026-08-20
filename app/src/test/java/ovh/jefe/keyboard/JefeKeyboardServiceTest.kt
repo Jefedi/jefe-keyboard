@@ -669,6 +669,60 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `retry never transfers a failed attempt to an identical replacement connection`() {
+        val failedConnection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val replacementConnection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val calls = AtomicInteger()
+        val service = testService(failedConnection).apply {
+            translation = {
+                if (calls.incrementAndGet() == 1) {
+                    RemoteResult.Failure("indisponible")
+                } else {
+                    RemoteResult.Success("hello")
+                }
+            }
+        }
+        val root = createRootAndStart(service)
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+
+        service.testConnection = replacementConnection
+        root.railView.retryButton().performClick()
+        drainMainLooper()
+
+        assertEquals(1, calls.get())
+        assertEquals("bonjour", failedConnection.text())
+        assertEquals("bonjour", replacementConnection.text())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `retry with no current connection clears the obsolete error immediately`() {
+        val connection = EditableInputConnection(context(), "bonjour", 0, 7)
+        val calls = AtomicInteger()
+        val service = testService(connection).apply {
+            translation = {
+                calls.incrementAndGet()
+                RemoteResult.Failure("indisponible")
+            }
+        }
+        val root = createRootAndStart(service)
+        root.keyboardView.onTranslateClick?.invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+
+        service.testConnection = null
+        root.railView.retryButton().performClick()
+
+        assertEquals(1, calls.get())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
     fun `stale retry read cannot clear a newer loading attempt`() {
         val connection = SynchronousSelectedTextCallbackInputConnection(
             context(),

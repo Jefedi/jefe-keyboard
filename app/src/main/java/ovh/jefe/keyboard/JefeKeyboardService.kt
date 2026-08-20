@@ -71,7 +71,7 @@ open class JefeKeyboardService : InputMethodService() {
     private val suggestionGate = SuggestionSessionGate()
     private var translationJob: Job? = null
     private var translationFeedbackJob: Job? = null
-    private var failedTranslationSelection: SelectionSnapshot? = null
+    private var failedTranslationAttempt: FailedTranslationAttempt? = null
     private var expectedTranslationSelectionUpdate: EditorSelectionRange? = null
     private var translationAttemptId = 0L
 
@@ -94,6 +94,13 @@ open class JefeKeyboardService : InputMethodService() {
         val absoluteSelectionEnd: Int,
         val textBeforeSelection: String,
         val textAfterSelection: String,
+    )
+
+    private data class FailedTranslationAttempt(
+        val attemptId: Long,
+        val generation: Long,
+        val connection: InputConnection,
+        val selection: SelectionSnapshot,
     )
 
     private data class ExtractedSelection(
@@ -188,33 +195,41 @@ open class JefeKeyboardService : InputMethodService() {
     private fun dismissClipboardPrompt() = Unit
 
     private fun retryTranslation() {
-        val attemptId = translationAttemptId
-        val generation = sessionGeneration
-        val expected = failedTranslationSelection ?: return
-        val connection = currentInputConnection ?: return
-        if (!isCurrentTranslationRetry(attemptId, generation, connection, expected)) return
-        val selectedText = connection.getSelectedText(0)?.toString()
-        if (!isCurrentTranslationRetry(attemptId, generation, connection, expected)) return
-        val current = captureSelection(connection, selectedText) {
-            isCurrentTranslationRetry(attemptId, generation, connection, expected)
+        val failedAttempt = failedTranslationAttempt ?: return
+        val connection = currentInputConnection
+        if (connection == null) {
+            if (ownsCurrentTranslationError(failedAttempt)) clearTranslationFeedback()
+            return
         }
-        if (!isCurrentTranslationRetry(attemptId, generation, connection, expected)) return
-        if (current != expected) {
+        if (!isCurrentTranslationRetry(failedAttempt, connection)) return
+        val selectedText = connection.getSelectedText(0)?.toString()
+        if (!isCurrentTranslationRetry(failedAttempt, connection)) return
+        val current = captureSelection(connection, selectedText) {
+            isCurrentTranslationRetry(failedAttempt, connection)
+        }
+        if (!isCurrentTranslationRetry(failedAttempt, connection)) return
+        if (current != failedAttempt.selection) {
             clearTranslationFeedback()
             return
         }
-        launchTranslation(generation, connection, expected)
+        launchTranslation(failedAttempt.generation, connection, failedAttempt.selection)
     }
 
     private fun isCurrentTranslationRetry(
-        attemptId: Long,
-        generation: Long,
+        failedAttempt: FailedTranslationAttempt,
         connection: InputConnection,
-        selection: SelectionSnapshot,
     ): Boolean {
-        return attemptId == translationAttemptId &&
-            isCurrentSession(generation, connection) &&
-            failedTranslationSelection == selection &&
+        return ownsCurrentTranslationError(failedAttempt) &&
+            connection === failedAttempt.connection &&
+            isCurrentSession(failedAttempt.generation, failedAttempt.connection)
+    }
+
+    private fun ownsCurrentTranslationError(
+        failedAttempt: FailedTranslationAttempt,
+    ): Boolean {
+        return failedAttempt === failedTranslationAttempt &&
+            failedAttempt.attemptId == translationAttemptId &&
+            failedAttempt.generation == sessionGeneration &&
             railInputs.translation == TranslationFeedback.Error
     }
 
@@ -551,7 +566,7 @@ open class JefeKeyboardService : InputMethodService() {
         translationFeedbackJob?.cancel()
         translationFeedbackJob = null
         val attemptId = ++translationAttemptId
-        failedTranslationSelection = selection
+        failedTranslationAttempt = null
         setTranslationFeedback(TranslationFeedback.Loading)
         val job = sessionScope.launch(start = CoroutineStart.LAZY) {
             val result = try {
@@ -601,6 +616,10 @@ open class JefeKeyboardService : InputMethodService() {
             is RemoteResult.Success -> {
                 if (result.value.isBlank()) {
                     showTranslationError(
+                        attemptId,
+                        generation,
+                        connection,
+                        selection,
                         "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
                     )
                     return
@@ -610,19 +629,31 @@ open class JefeKeyboardService : InputMethodService() {
                 if (!continueTranslationAttempt(attemptId, generation, connection)) return
                 if (!committed) {
                     showEditorFailure()
-                    showTranslationError("L’éditeur a refusé la traduction.")
+                    showTranslationError(
+                        attemptId,
+                        generation,
+                        connection,
+                        selection,
+                        "L’éditeur a refusé la traduction.",
+                    )
                     return
                 }
 
                 val committedRange = currentRange(connection)
                 if (!continueTranslationAttempt(attemptId, generation, connection)) return
-                failedTranslationSelection = null
+                failedTranslationAttempt = null
                 expectedTranslationSelectionUpdate = committedRange
                 invalidateSuggestions()
                 setTranslationFeedback(TranslationFeedback.Success)
                 scheduleTranslationClear(1_200L)
             }
-            is RemoteResult.Failure -> showTranslationError(result.message)
+            is RemoteResult.Failure -> showTranslationError(
+                attemptId,
+                generation,
+                connection,
+                selection,
+                result.message,
+            )
         }
     }
 
@@ -637,7 +668,20 @@ open class JefeKeyboardService : InputMethodService() {
         return false
     }
 
-    private fun showTranslationError(message: String) {
+    private fun showTranslationError(
+        attemptId: Long,
+        generation: Long,
+        connection: InputConnection,
+        selection: SelectionSnapshot,
+        message: String,
+    ) {
+        if (!continueTranslationAttempt(attemptId, generation, connection)) return
+        failedTranslationAttempt = FailedTranslationAttempt(
+            attemptId,
+            generation,
+            connection,
+            selection,
+        )
         setTranslationFeedback(TranslationFeedback.Error)
         showRemoteFailure(message)
         scheduleTranslationClear(3_000L)
@@ -654,7 +698,7 @@ open class JefeKeyboardService : InputMethodService() {
     private fun clearTranslationFeedback() {
         translationFeedbackJob?.cancel()
         translationFeedbackJob = null
-        failedTranslationSelection = null
+        failedTranslationAttempt = null
         expectedTranslationSelectionUpdate = null
         setTranslationFeedback(TranslationFeedback.Idle)
     }

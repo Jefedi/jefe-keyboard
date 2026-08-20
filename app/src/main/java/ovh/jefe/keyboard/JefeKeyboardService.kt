@@ -551,37 +551,55 @@ open class JefeKeyboardService : InputMethodService() {
         selection: SelectionSnapshot,
         result: RemoteResult<String>,
     ) {
-        if (attemptId != translationAttemptId) return
+        if (!continueTranslationAttempt(attemptId, generation, connection)) return
         translationJob = null
-        if (!isCurrentSession(generation, connection)) {
-            clearTranslationFeedback()
-            return
-        }
-        val current = captureSelection(connection, connection.getSelectedText(0)?.toString())
+        val selectedText = connection.getSelectedText(0)?.toString()
+        if (!continueTranslationAttempt(attemptId, generation, connection)) return
+        val current = captureSelection(connection, selectedText)
+        if (!continueTranslationAttempt(attemptId, generation, connection)) return
         if (current != selection) {
             clearTranslationFeedback()
             return
         }
 
         when (result) {
-            is RemoteResult.Success -> when {
-                result.value.isBlank() -> showTranslationError(
-                    "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
-                )
-                connection.commitText(result.value, 1) -> {
-                    failedTranslationSelection = null
-                    expectedTranslationSelectionUpdate = currentRange(connection)
-                    invalidateSuggestions()
-                    setTranslationFeedback(TranslationFeedback.Success)
-                    scheduleTranslationClear(1_200L)
+            is RemoteResult.Success -> {
+                if (result.value.isBlank()) {
+                    showTranslationError(
+                        "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
+                    )
+                    return
                 }
-                else -> {
+
+                val committed = connection.commitText(result.value, 1)
+                if (!continueTranslationAttempt(attemptId, generation, connection)) return
+                if (!committed) {
                     showEditorFailure()
                     showTranslationError("L’éditeur a refusé la traduction.")
+                    return
                 }
+
+                val committedRange = currentRange(connection)
+                if (!continueTranslationAttempt(attemptId, generation, connection)) return
+                failedTranslationSelection = null
+                expectedTranslationSelectionUpdate = committedRange
+                invalidateSuggestions()
+                setTranslationFeedback(TranslationFeedback.Success)
+                scheduleTranslationClear(1_200L)
             }
             is RemoteResult.Failure -> showTranslationError(result.message)
         }
+    }
+
+    private fun continueTranslationAttempt(
+        attemptId: Long,
+        generation: Long,
+        connection: InputConnection,
+    ): Boolean {
+        if (attemptId != translationAttemptId) return false
+        if (isCurrentSession(generation, connection)) return true
+        clearTranslationFeedback()
+        return false
     }
 
     private fun showTranslationError(message: String) {

@@ -503,6 +503,82 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `accepted commit callback cannot overwrite a newer loading attempt`() {
+        val connection = SynchronousCommitCallbackInputConnection(
+            context(),
+            "bonjour monde",
+            0,
+            7,
+        )
+        val delayed = DelayedRemoteResult("world")
+        val calls = AtomicInteger()
+        lateinit var service: TestJefeKeyboardService
+        lateinit var root: KeyboardRootView
+        service = testService(connection).apply {
+            translation = {
+                if (calls.incrementAndGet() == 1) {
+                    RemoteResult.Success("hello")
+                } else {
+                    delayed.complete(it)
+                }
+            }
+        }
+        root = createRootAndStart(service)
+        connection.onAcceptedCommit = {
+            connection.onAcceptedCommit = null
+            service.onUpdateSelection(0, 7, 5, 5, -1, -1)
+            connection.select(6, 11)
+            service.onUpdateSelection(5, 5, 6, 11, -1, -1)
+            root.keyboardView.onTranslateClick?.invoke()
+            assertEquals(
+                TopRailState.Translation(TranslationFeedback.Loading),
+                root.railView.state,
+            )
+        }
+
+        root.keyboardView.onTranslateClick?.invoke()
+        assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
+
+        assertEquals("hello monde", connection.text())
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), root.railView.state)
+        shadowOf(Looper.getMainLooper()).idleFor(1_200, TimeUnit.MILLISECONDS)
+        assertEquals(TopRailState.Translation(TranslationFeedback.Loading), root.railView.state)
+
+        delayed.release.countDown()
+        idleMainLooperUntil { connection.text() == "hello world" }
+        assertEquals(2, calls.get())
+        assertEquals(TopRailState.Translation(TranslationFeedback.Success), root.railView.state)
+        service.onDestroy()
+    }
+
+    @Test
+    fun `accepted commit callback without a newer attempt never claims stale success`() {
+        val connection = SynchronousCommitCallbackInputConnection(
+            context(),
+            "bonjour",
+            0,
+            7,
+        )
+        val service = testService(connection).apply {
+            translation = { RemoteResult.Success("hello") }
+        }
+        val root = createRootAndStart(service)
+        connection.onAcceptedCommit = {
+            connection.onAcceptedCommit = null
+            service.onUpdateSelection(0, 7, 5, 5, -1, -1)
+        }
+
+        root.keyboardView.onTranslateClick?.invoke()
+        drainMainLooper()
+
+        assertEquals("hello", connection.text())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        shadowOf(Looper.getMainLooper()).idleFor(1_200, TimeUnit.MILLISECONDS)
+        assertFalse(root.railView.state is TopRailState.Translation)
+        service.onDestroy()
+    }
+
+    @Test
     fun `remote failure stays visible retries once and then succeeds`() {
         val connection = EditableInputConnection(context(), "bonjour", 0, 7)
         val replies = ArrayDeque<RemoteResult<String>>().apply {
@@ -1170,6 +1246,21 @@ private class RejectingCommitInputConnection(
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
         commitAttempts += text?.toString().orEmpty()
         return false
+    }
+}
+
+private class SynchronousCommitCallbackInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+    selectionEnd: Int = selectionStart,
+) : EditableInputConnection(context, text, selectionStart, selectionEnd) {
+    var onAcceptedCommit: (() -> Unit)? = null
+
+    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        val accepted = super.commitText(text, newCursorPosition)
+        if (accepted) onAcceptedCommit?.invoke()
+        return accepted
     }
 }
 

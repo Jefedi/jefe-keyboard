@@ -4,11 +4,9 @@ import android.content.pm.ApplicationInfo
 import android.os.Looper
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
-import android.view.View
-import android.view.ViewGroup
 import android.widget.EditText
-import android.widget.TextView
 import androidx.preference.EditTextPreference
+import androidx.preference.Preference
 import androidx.preference.PreferenceManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -55,13 +53,14 @@ class SettingsPrivacyTest {
                 as? SettingsActivity.SettingsFragment,
         )
         val preference = requireNotNull(fragment.findPreference<EditTextPreference>("whisper_url"))
-        assertEquals(0, allText(activity.window.decorView).count { it == "✅ Configuré" })
+        val setupPreference = requireNotNull(fragment.findPreference<Preference>("setup_whisper"))
+        assertEquals("À terminer · toucher pour ouvrir", setupPreference.summary)
 
         assertTrue(preference.callChangeListener("https://voice.example.test/base/"))
         preference.text = "https://voice.example.test/base/"
         Shadows.shadowOf(Looper.getMainLooper()).idle()
 
-        assertEquals(1, allText(activity.window.decorView).count { it == "✅ Configuré" })
+        assertEquals("✅ Configuré", setupPreference.summary)
     }
 
     @Test
@@ -104,11 +103,5 @@ class SettingsPrivacyTest {
         val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
 
         assertEquals(0, activity.applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP)
-    }
-
-    private fun allText(view: View): List<String> {
-        val ownText = if (view is TextView) listOf(view.text.toString()) else emptyList()
-        if (view !is ViewGroup) return ownText
-        return ownText + (0 until view.childCount).flatMap { allText(view.getChildAt(it)) }
     }
 }

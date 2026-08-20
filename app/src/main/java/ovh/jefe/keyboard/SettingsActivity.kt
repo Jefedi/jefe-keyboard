@@ -1,389 +1,276 @@
 package ovh.jefe.keyboard
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
-import android.inputmethodservice.InputMethodService
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
 import android.view.View
-import android.widget.Button
-import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.preference.EditTextPreference
+import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
-import androidx.preference.EditTextPreference
 
-/**
- * Onboarding + Settings combinés.
- * Vérifie: IME activé → IME par défaut → permission micro → URLs configurées.
- * Guide l'utilisateur étape par étape comme Gboard, FlorisBoard ou AnySoftKeyboard.
- */
-class SettingsActivity : AppCompatActivity() {
-
-    companion object {
-        private const val REQ_RECORD_AUDIO = 101
-        private const val REQ_IME_ENABLED = 102
-        private const val REQ_IME_DEFAULT = 103
-    }
-
-    private lateinit var statusImeEnabled: TextView
-    private lateinit var statusImeDefault: TextView
-    private lateinit var statusMicPermission: TextView
-    private lateinit var statusWhisperUrl: TextView
-    private lateinit var statusTranslateUrl: TextView
-
-    private lateinit var btnEnableIme: Button
-    private lateinit var btnSetDefault: Button
-    private lateinit var btnGrantMic: Button
-    private lateinit var btnConfigureUrls: Button
-
-    private lateinit var progressIme: ProgressBar
-    private lateinit var progressDefault: ProgressBar
-    private lateinit var progressMic: ProgressBar
+/** Setup and private-service settings with a single scrolling preference surface. */
+class SettingsActivity : AppCompatActivity(),
+    SharedPreferences.OnSharedPreferenceChangeListener {
+    private lateinit var preferences: SharedPreferences
+    private lateinit var setupProgressText: TextView
+    private lateinit var setupProgressBar: ProgressBar
+    private lateinit var setupStatusBadge: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.settings_activity)
+        preferences = PreferenceManager.getDefaultSharedPreferences(this)
+        setupProgressText = findViewById(R.id.setup_progress_text)
+        setupProgressBar = findViewById(R.id.setup_progress_bar)
+        setupStatusBadge = findViewById(R.id.setup_status_badge)
 
         if (savedInstanceState == null) {
             supportFragmentManager.beginTransaction()
                 .replace(R.id.settings_container, SettingsFragment())
                 .commit()
         }
-
-        // Ajouter la vue d'onboarding au-dessus des settings
-        setupOnboarding()
+        refreshSetup()
     }
 
-    private fun setupOnboarding() {
-        val container = findViewById<LinearLayout>(R.id.onboarding_container)
-            ?: return
-
-        container.removeAllViews()
-
-        // Titre
-        val title = TextView(this).apply {
-            text = "Configuration du clavier"
-            textSize = 20f
-            setPadding(48, 32, 48, 16)
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        container.addView(title)
-
-        // ─── Étape 1: Activer le clavier ───
-        val step1Layout = createStepLayout(
-            "1. Activer Jefe Keyboard",
-            "Le clavier doit être activé dans les paramètres système.",
-            "Activer le clavier",
-            ::openImeSettings,
-            ::isImeEnabled
-        )
-        statusImeEnabled = step1Layout.status
-        btnEnableIme = step1Layout.button
-        progressIme = step1Layout.progress
-        container.addView(step1Layout.root)
-
-        // ─── Étape 2: Définir comme clavier par défaut ───
-        val step2Layout = createStepLayout(
-            "2. Choisir comme clavier par défaut",
-            "Sélectionnez Jefe Keyboard dans la liste des claviers.",
-            "Changer de clavier",
-            ::openDefaultImeSettings,
-            ::isImeDefault
-        )
-        statusImeDefault = step2Layout.status
-        btnSetDefault = step2Layout.button
-        progressDefault = step2Layout.progress
-        container.addView(step2Layout.root)
-
-        // ─── Étape 3: Permission micro ───
-        val step3Layout = createStepLayout(
-            "3. Autoriser le microphone",
-            "Nécessaire pour la dictée vocale (Whisper).",
-            "Accorder la permission",
-            ::requestMicPermission,
-            ::hasMicPermission
-        )
-        statusMicPermission = step3Layout.status
-        btnGrantMic = step3Layout.button
-        progressMic = step3Layout.progress
-        container.addView(step3Layout.root)
-
-        // ─── Étape 4: Configurer Whisper ───
-        val step4Layout = createStepLayout(
-            "4. Configurer l'URL Whisper",
-            "URL de votre serveur Whisper pour la dictée vocale.",
-            null,
-            null,
-            ::isWhisperConfigured
-        )
-        statusWhisperUrl = step4Layout.status
-        container.addView(step4Layout.root)
-
-        // ─── Étape 5: Configurer LibreTranslate ───
-        val step5Layout = createStepLayout(
-            "5. Configurer l'URL LibreTranslate",
-            "URL de votre serveur LibreTranslate pour la traduction.",
-            null,
-            null,
-            ::isTranslateConfigured
-        )
-        statusTranslateUrl = step5Layout.status
-        container.addView(step5Layout.root)
-
-        // Séparateur
-        val separator = View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 2
-            ).apply { setMargins(48, 32, 48, 32) }
-            setBackgroundColor(0x22000000)
-        }
-        container.addView(separator)
-
-        // Info
-        val info = TextView(this).apply {
-            text = "ℹ️ Les URLs et clés API se configurent dans les paramètres ci-dessous."
-            textSize = 13f
-            setPadding(48, 16, 48, 32)
-            setTextColor(0xFF666666.toInt())
-        }
-        container.addView(info)
+    override fun onStart() {
+        super.onStart()
+        preferences.registerOnSharedPreferenceChangeListener(this)
     }
 
-    private data class StepLayout(
-        val root: LinearLayout,
-        val status: TextView,
-        val button: Button,
-        val progress: ProgressBar
-    )
-
-    private fun createStepLayout(
-        title: String,
-        description: String,
-        buttonText: String?,
-        buttonAction: (() -> Unit)?,
-        checkFn: () -> Boolean
-    ): StepLayout {
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 24)
-        }
-
-        // Title row with checkmark/cross
-        val titleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER_VERTICAL
-        }
-
-        val progress = ProgressBar(this).apply {
-            isIndeterminate = false
-            max = 100
-            progress = if (checkFn()) 100 else 0
-            layoutParams = LinearLayout.LayoutParams(32.dp(), 32.dp()).apply {
-                rightMargin = 16
-            }
-        }
-        titleRow.addView(progress)
-
-        val titleView = TextView(this).apply {
-            text = title
-            textSize = 16f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        titleRow.addView(titleView)
-        layout.addView(titleRow)
-
-        // Description
-        val descView = TextView(this).apply {
-            text = description
-            textSize = 13f
-            setPadding(48, 8, 0, 8)
-            setTextColor(0xFF666666.toInt())
-        }
-        layout.addView(descView)
-
-        // Status
-        val status = TextView(this).apply {
-            textSize = 13f
-            setPadding(48, 4, 0, 8)
-            val done = checkFn()
-            text = if (done) "✅ Configuré" else "⏳ En attente"
-            setTextColor(if (done) 0xFF4CAF50.toInt() else 0xFFFF9800.toInt())
-        }
-        layout.addView(status)
-
-        // Button (optional)
-        if (buttonText != null && buttonAction != null) {
-            val button = Button(this).apply {
-                text = buttonText
-                setOnClickListener { buttonAction() }
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply { setMargins(48, 8, 0, 8) }
-            }
-            layout.addView(button)
-
-            return StepLayout(layout, status, button, progress)
-        }
-
-        // Placeholder button (hidden)
-        val placeholder = Button(this).apply { visibility = View.GONE }
-        return StepLayout(layout, status, placeholder, progress)
+    override fun onResume() {
+        super.onResume()
+        refreshSetup()
     }
 
-    // ─── Checks ───
-    private fun isImeEnabled(): Boolean {
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-        val enabledImes = imm.enabledInputMethodList
-        return enabledImes.any { it.packageName == packageName }
+    override fun onStop() {
+        preferences.unregisterOnSharedPreferenceChangeListener(this)
+        super.onStop()
     }
 
-    private fun isImeDefault(): Boolean {
-        val currentIme = Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
-        return currentIme != null && currentIme.contains(packageName)
+    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
+        if (key == KEY_WHISPER_URL || key == KEY_TRANSLATE_URL) refreshSetup()
     }
 
-    private fun hasMicPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun isWhisperConfigured(): Boolean {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val url = prefs.getString("whisper_url", "") ?: ""
-        return ServiceEndpoint.parse(url) is RemoteResult.Success
-    }
-
-    private fun isTranslateConfigured(): Boolean {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val url = prefs.getString("translate_url", "") ?: ""
-        return ServiceEndpoint.parse(url) is RemoteResult.Success
-    }
-
-    // ─── Actions ───
-    private fun openImeSettings() {
-        try {
-            val intent = Intent(Settings.ACTION_INPUT_METHOD_SETTINGS).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-            }
-            startActivityForResult(intent, REQ_IME_ENABLED)
-        } catch (e: Exception) {
-            // Fallback: open general settings
-            startActivity(Intent(Settings.ACTION_SETTINGS))
-        }
-    }
-
-    private fun openDefaultImeSettings() {
-        try {
-            // Android 11+: show input method picker dialog
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-            imm.showInputMethodPicker()
-        } catch (e: Exception) {
-            // Fallback: open keyboard settings
-            openImeSettings()
-        }
-    }
-
-    private fun requestMicPermission() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.RECORD_AUDIO),
-            REQ_RECORD_AUDIO
-        )
-    }
-
-    // ─── Résultats ───
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        refreshOnboarding()
+        refreshSetup()
     }
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
-        grantResults: IntArray
+        grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_RECORD_AUDIO) {
-            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-            if (granted) {
-                Toast.makeText(this, "Micro autorisé ✅", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "Micro refusé — la dictée ne marchera pas", Toast.LENGTH_LONG).show()
-            }
+        if (requestCode != REQUEST_RECORD_AUDIO) return
+        val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+        Toast.makeText(
+            this,
+            if (granted) R.string.microphone_granted else R.string.microphone_denied,
+            if (granted) Toast.LENGTH_SHORT else Toast.LENGTH_LONG,
+        ).show()
+        refreshSetup()
+    }
+
+    internal fun refreshSetup() {
+        if (!::setupProgressText.isInitialized) return
+        renderSetup(setupStatus())
+    }
+
+    internal fun renderSetup(status: SetupStatus) {
+        setupProgressText.text = getString(R.string.setup_progress_format, status.completed)
+        setupProgressBar.progress = status.completed
+        val isReady = status.completed == SETUP_STEP_COUNT
+        setupStatusBadge.text = getString(
+            if (isReady) R.string.setup_status_ready else R.string.setup_status_in_progress,
+        )
+        setupStatusBadge.setTextColor(
+            ContextCompat.getColor(this, if (isReady) R.color.settings_success else R.color.slate),
+        )
+        setupStatusBadge.visibility = View.VISIBLE
+        (supportFragmentManager.findFragmentById(R.id.settings_container) as? SettingsFragment)
+            ?.renderSetupStatus(status)
+    }
+
+    internal fun setupStatus(): SetupStatus = SetupStatus(
+        imeEnabled = isImeEnabled(),
+        imeDefault = isImeDefault(),
+        microphoneGranted = hasMicrophonePermission(),
+        whisperConfigured = endpointConfigured(KEY_WHISPER_URL),
+        translateConfigured = endpointConfigured(KEY_TRANSLATE_URL),
+    )
+
+    private fun isImeEnabled(): Boolean {
+        val manager = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+        return manager.enabledInputMethodList.any { it.packageName == packageName }
+    }
+
+    private fun isImeDefault(): Boolean =
+        Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+            ?.contains(packageName) == true
+
+    private fun hasMicrophonePermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun endpointConfigured(key: String): Boolean =
+        ServiceEndpoint.parse(preferences.getString(key, "").orEmpty()) is RemoteResult.Success
+
+    internal fun openImeSettings() {
+        runCatching {
+            startActivityForResult(
+                Intent(Settings.ACTION_INPUT_METHOD_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                REQUEST_IME_ENABLED,
+            )
+        }.onFailure {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
         }
-        refreshOnboarding()
     }
 
-    override fun onResume() {
-        super.onResume()
-        refreshOnboarding()
+    internal fun openInputMethodPicker() {
+        runCatching {
+            val manager = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+            manager.showInputMethodPicker()
+        }.onFailure { openImeSettings() }
     }
 
-    private fun refreshOnboarding() {
-        setupOnboarding()
+    internal fun requestMicrophonePermission() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.RECORD_AUDIO),
+            REQUEST_RECORD_AUDIO,
+        )
     }
 
-    // ─── Utils ───
-    private fun Int.dp(): Int {
-        val dm = resources.displayMetrics
-        return (this * dm.density).toInt()
+    internal data class SetupStatus(
+        val imeEnabled: Boolean,
+        val imeDefault: Boolean,
+        val microphoneGranted: Boolean,
+        val whisperConfigured: Boolean,
+        val translateConfigured: Boolean,
+    ) {
+        val completed: Int
+            get() = listOf(
+                imeEnabled,
+                imeDefault,
+                microphoneGranted,
+                whisperConfigured,
+                translateConfigured,
+            ).count { it }
     }
 
     class SettingsFragment : PreferenceFragmentCompat() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
-            configureUrlPreference("whisper_url")
-            configureUrlPreference("translate_url")
-            configureApiKeyPreference("whisper_api_key")
-            configureApiKeyPreference("translate_api_key")
+            configureSetupActions()
+            configureUrlPreference(KEY_WHISPER_URL)
+            configureUrlPreference(KEY_TRANSLATE_URL)
+            configureApiKeyPreference(KEY_WHISPER_API_KEY)
+            configureApiKeyPreference(KEY_TRANSLATE_API_KEY)
         }
+
+        override fun onResume() {
+            super.onResume()
+            (activity as? SettingsActivity)?.refreshSetup()
+        }
+
+        private fun configureSetupActions() {
+            action(SETUP_ENABLE_IME) { host().openImeSettings() }
+            action(SETUP_DEFAULT_IME) { host().openInputMethodPicker() }
+            action(SETUP_MICROPHONE) { host().requestMicrophonePermission() }
+            action(SETUP_WHISPER) { openEditor(KEY_WHISPER_URL) }
+            action(SETUP_TRANSLATE) { openEditor(KEY_TRANSLATE_URL) }
+        }
+
+        private fun openEditor(key: String) {
+            findPreference<EditTextPreference>(key)?.let(::onDisplayPreferenceDialog)
+        }
+
+        private fun action(key: String, block: () -> Unit) {
+            findPreference<Preference>(key)?.onPreferenceClickListener =
+                Preference.OnPreferenceClickListener {
+                    block()
+                    true
+                }
+        }
+
+        private fun host(): SettingsActivity = requireActivity() as SettingsActivity
 
         private fun configureUrlPreference(key: String) {
             val preference = findPreference<EditTextPreference>(key) ?: return
-            preference.onPreferenceChangeListener =
-                androidx.preference.Preference.OnPreferenceChangeListener { _, newValue ->
-                    when (val result = ServiceEndpoint.parse(newValue as? String ?: "")) {
-                        is RemoteResult.Success -> {
-                            activity?.window?.decorView?.post {
-                                (activity as? SettingsActivity)?.refreshOnboarding()
-                            }
-                            true
-                        }
+            preference.onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, newValue ->
+                when (val result = ServiceEndpoint.parse(newValue as? String ?: "")) {
+                    is RemoteResult.Success -> {
+                        view?.post { (activity as? SettingsActivity)?.refreshSetup() }
+                        true
+                    }
 
-                        is RemoteResult.Failure -> {
-                            Toast.makeText(requireContext(), result.message, Toast.LENGTH_LONG).show()
-                            false
-                        }
+                    is RemoteResult.Failure -> {
+                        Toast.makeText(requireContext(), result.message, Toast.LENGTH_LONG).show()
+                        false
                     }
                 }
+            }
         }
 
         private fun configureApiKeyPreference(key: String) {
             val preference = findPreference<EditTextPreference>(key) ?: return
-            preference.summaryProvider =
-                androidx.preference.Preference.SummaryProvider<EditTextPreference> { apiKey ->
-                    if (apiKey.text.isNullOrEmpty()) "Non configurée" else "Configurée"
-                }
+            preference.summaryProvider = Preference.SummaryProvider<EditTextPreference> { apiKey ->
+                getString(
+                    if (apiKey.text.isNullOrEmpty()) {
+                        R.string.api_key_not_configured
+                    } else {
+                        R.string.api_key_configured
+                    },
+                )
+            }
             preference.setOnBindEditTextListener { editor ->
-                editor.inputType =
-                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                editor.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
                 editor.transformationMethod = PasswordTransformationMethod.getInstance()
                 editor.setSelection(editor.text.length)
             }
         }
+
+        internal fun renderSetupStatus(status: SetupStatus) {
+            setStatus(SETUP_ENABLE_IME, status.imeEnabled)
+            setStatus(SETUP_DEFAULT_IME, status.imeDefault)
+            setStatus(SETUP_MICROPHONE, status.microphoneGranted)
+            setStatus(SETUP_WHISPER, status.whisperConfigured)
+            setStatus(SETUP_TRANSLATE, status.translateConfigured)
+        }
+
+        private fun setStatus(key: String, complete: Boolean) {
+            findPreference<Preference>(key)?.summary = getString(
+                if (complete) R.string.setup_status_done else R.string.setup_status_pending,
+            )
+        }
+    }
+
+    private companion object {
+        const val REQUEST_RECORD_AUDIO = 101
+        const val REQUEST_IME_ENABLED = 102
+        const val KEY_WHISPER_URL = "whisper_url"
+        const val KEY_TRANSLATE_URL = "translate_url"
+        const val KEY_WHISPER_API_KEY = "whisper_api_key"
+        const val KEY_TRANSLATE_API_KEY = "translate_api_key"
+        const val SETUP_ENABLE_IME = "setup_enable_ime"
+        const val SETUP_DEFAULT_IME = "setup_default_ime"
+        const val SETUP_MICROPHONE = "setup_microphone"
+        const val SETUP_WHISPER = "setup_whisper"
+        const val SETUP_TRANSLATE = "setup_translate"
+        const val SETUP_STEP_COUNT = 5
     }
 }

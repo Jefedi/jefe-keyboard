@@ -2,6 +2,29 @@
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <PreferenceCategory app:title="@string/cat_setup">
+        <Preference
+            app:key="setup_enable_ime"
+            app:title="@string/setup_enable_title"
+            app:summary="@string/setup_enable_summary" />
+        <Preference
+            app:key="setup_default_ime"
+            app:title="@string/setup_default_title"
+            app:summary="@string/setup_default_summary" />
+        <Preference
+            app:key="setup_microphone"
+            app:title="@string/setup_microphone_title"
+            app:summary="@string/setup_microphone_summary" />
+        <Preference
+            app:key="setup_whisper"
+            app:title="@string/setup_whisper_title"
+            app:summary="@string/setup_whisper_summary" />
+        <Preference
+            app:key="setup_translate"
+            app:title="@string/setup_translate_title"
+            app:summary="@string/setup_translate_summary" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="@string/cat_whisper">
         <EditTextPreference
             app:key="whisper_url"

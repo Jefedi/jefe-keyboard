@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_settings_header"
+    android:orientation="vertical"
+    android:paddingStart="18dp"
+    android:paddingTop="14dp"
+    android:paddingEnd="18dp"
+    android:paddingBottom="14dp">
+
+    <TextView
+        android:id="@+id/setup_header_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif-medium"
+        android:text="@string/setup_header_title"
+        android:textColor="@color/key_text"
+        android:textSize="17sp" />
+
+    <TextView
+        android:id="@+id/setup_progress_text"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:fontFamily="sans-serif"
+        android:text="@string/setup_progress_empty"
+        android:textColor="@color/slate"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/setup_status_badge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:fontFamily="sans-serif-medium"
+        android:text="@string/setup_status_in_progress"
+        android:textColor="@color/slate"
+        android:textSize="12sp"
+        android:visibility="visible" />
+
+    <ProgressBar
+        android:id="@+id/setup_progress_bar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="4dp"
+        android:layout_marginTop="10dp"
+        android:max="5"
+        android:progress="0"
+        android:progressBackgroundTint="@color/settings_header_outline"
+        android:progressTint="@color/signal_blue" />
+</LinearLayout>

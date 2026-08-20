@@ -1,19 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Jefe Keyboard</string>
-    <string name="settings_title">Parametres Jefe Keyboard</string>
-    <string name="subtype_fr">Francais</string>
+    <string name="settings_title">Jefe Keyboard</string>
+    <string name="subtype_fr">Français</string>
 
-    <string name="cat_whisper">Dictee vocale (Whisper)</string>
+    <string name="cat_setup">Configuration privée</string>
+    <string name="setup_header_title">Votre clavier privé</string>
+    <string name="setup_progress_empty">0 sur 5 étapes terminées</string>
+    <string name="setup_progress_format">%1$d sur 5 étapes terminées</string>
+    <string name="setup_status_done">✅ Configuré</string>
+    <string name="setup_status_in_progress">Configuration en cours</string>
+    <string name="setup_status_ready">Prêt à écrire</string>
+    <string name="setup_status_pending">À terminer · toucher pour ouvrir</string>
+    <string name="setup_enable_title">1. Activer Jefe Keyboard</string>
+    <string name="setup_enable_summary">Autoriser le clavier dans Android.</string>
+    <string name="setup_default_title">2. Choisir le clavier</string>
+    <string name="setup_default_summary">Définir Jefe comme clavier actif.</string>
+    <string name="setup_microphone_title">3. Autoriser le microphone</string>
+    <string name="setup_microphone_summary">Nécessaire uniquement pour la dictée.</string>
+    <string name="setup_whisper_title">4. Relier votre serveur vocal</string>
+    <string name="setup_whisper_summary">Configurer une adresse Whisper HTTPS.</string>
+    <string name="setup_translate_title">5. Relier votre serveur de traduction</string>
+    <string name="setup_translate_summary">Configurer une adresse LibreTranslate HTTPS.</string>
+    <string name="microphone_granted">Microphone autorisé</string>
+    <string name="microphone_denied">Microphone refusé — la dictée restera désactivée.</string>
+
+    <string name="cat_whisper">Dictée vocale · Whisper</string>
     <string name="whisper_url_title">URL Whisper</string>
-    <string name="whisper_url_summary">URL de votre serveur Whisper (ex: https://whisper.jefe.al)</string>
-    <string name="whisper_key_title">Cle API (optionnel)</string>
-    <string name="whisper_model_title">Modele</string>
+    <string name="whisper_url_summary">Adresse HTTPS de votre serveur vocal</string>
+    <string name="whisper_key_title">Clé API (optionnelle)</string>
+    <string name="whisper_model_title">Modèle</string>
 
-    <string name="cat_translate">Traduction (LibreTranslate)</string>
+    <string name="cat_translate">Traduction · LibreTranslate</string>
     <string name="translate_url_title">URL LibreTranslate</string>
-    <string name="translate_url_summary">URL de votre serveur (ex: https://translate.jefe.al)</string>
-    <string name="translate_key_title">Cle API (optionnel)</string>
+    <string name="translate_url_summary">Adresse HTTPS de votre serveur de traduction</string>
+    <string name="translate_key_title">Clé API (optionnelle)</string>
     <string name="translate_source_title">Langue source</string>
     <string name="translate_target_title">Langue cible</string>
+
+    <string name="keyboard_accessibility_label">Clavier français Jefe</string>
+    <string name="keyboard_space">espace</string>
+    <string name="keyboard_enter_default">Retour</string>
+    <string name="keyboard_enter_go">Aller</string>
+    <string name="keyboard_enter_search">Rechercher</string>
+    <string name="keyboard_enter_previous">Préc.</string>
+    <string name="keyboard_enter_next">Suiv.</string>
+    <string name="keyboard_enter_send">Envoyer</string>
+    <string name="keyboard_enter_done">OK</string>
+    <string name="keyboard_recording">Écoute…</string>
+    <string name="api_key_configured">Configurée</string>
+    <string name="api_key_not_configured">Non configurée</string>
 </resources>

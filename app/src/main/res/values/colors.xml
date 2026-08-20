@@ -1,11 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#1A73E8</color>
-    <color name="key_bg">#E8E8E8</color>
-    <color name="key_bg_special">#C8C8C8</color>
-    <color name="key_text">#1A1A1A</color>
-    <color name="key_pressed">#4A90D9</color>
+    <color name="ink">#102235</color>
+    <color name="signal_blue">#2563EB</color>
+    <color name="private_teal">#14B8A6</color>
+    <color name="porcelain">#F4F7FA</color>
+    <color name="slate">#64748B</color>
+    <color name="night">#0B1220</color>
+
+    <color name="primary">@color/signal_blue</color>
+    <color name="keyboard_surface">@color/porcelain</color>
+    <color name="key_bg">#FFFFFF</color>
+    <color name="key_bg_special">#DDE7EF</color>
+    <color name="key_text">@color/ink</color>
+    <color name="key_pressed">#B9CEE1</color>
+    <color name="key_outline">#D4DFE8</color>
     <color name="suggestion_bg">#FFFFFF</color>
-    <color name="suggestion_text">#1A1A1A</color>
-    <color name="recording_red">#E53935</color>
+    <color name="suggestion_text">@color/ink</color>
+    <color name="suggestion_outline">#D4DFE8</color>
+    <color name="recording_red">#C6283D</color>
+    <color name="action_pressed">#184FC6</color>
+    <color name="on_action">#FFFFFF</color>
+    <color name="mic_icon">@color/ink</color>
+
+    <color name="settings_surface">@color/porcelain</color>
+    <color name="settings_header_surface">#E6F8F5</color>
+    <color name="settings_header_outline">#B6E8E1</color>
+    <color name="settings_on_ink">#FFFFFF</color>
+    <color name="settings_success">#087E73</color>
+    <color name="settings_pending">#8A5A00</color>
 </resources>

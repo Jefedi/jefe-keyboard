@@ -1,33 +1,44 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ink">#102235</color>
-    <color name="signal_blue">#2563EB</color>
-    <color name="private_teal">#14B8A6</color>
-    <color name="porcelain">#F4F7FA</color>
-    <color name="slate">#64748B</color>
-    <color name="night">#0B1220</color>
+    <color name="paper">#F4F6F5</color>
+    <color name="ink">#142934</color>
+    <color name="mist">#D7E0E0</color>
+    <color name="slate">#68808A</color>
+    <color name="secondary_text">#49616B</color>
+    <color name="pen_blue">#2E5C9A</color>
+    <color name="recording_red">#C84B48</color>
+    <color name="elevated_surface">#E8EEED</color>
+    <color name="divider">#C9D5D4</color>
+    <color name="on_accent">#FFFFFF</color>
+    <color name="on_recording">#FFFFFF</color>
 
-    <color name="primary">@color/signal_blue</color>
-    <color name="keyboard_surface">@color/porcelain</color>
-    <color name="key_bg">#FFFFFF</color>
-    <color name="key_bg_special">#DDE7EF</color>
+    <color name="signal_blue">@color/pen_blue</color>
+    <color name="primary">@color/pen_blue</color>
+    <color name="private_teal">@color/pen_blue</color>
+    <color name="porcelain">@color/paper</color>
+    <color name="night">#101719</color>
+
+    <color name="keyboard_surface">@color/paper</color>
+    <color name="key_bg">#EEF2F1</color>
+    <color name="key_bg_special">#E3EAE9</color>
     <color name="key_text">@color/ink</color>
-    <color name="key_pressed">#B9CEE1</color>
-    <color name="key_outline">#D4DFE8</color>
-    <color name="suggestion_bg">#FFFFFF</color>
-    <color name="suggestion_pressed">#DCE9F8</color>
+    <color name="key_pressed">@color/mist</color>
+    <color name="key_outline">@color/divider</color>
+    <color name="suggestion_bg">@android:color/transparent</color>
+    <color name="suggestion_pressed">@color/mist</color>
     <color name="suggestion_text">@color/ink</color>
-    <color name="suggestion_outline">#D4DFE8</color>
-    <color name="recording_red">#C6283D</color>
-    <color name="action_pressed">#184FC6</color>
-    <color name="on_action">#FFFFFF</color>
+    <color name="suggestion_outline">@color/divider</color>
+    <color name="action_pressed">@color/pen_blue</color>
+    <color name="on_action">@color/on_accent</color>
     <color name="mic_icon">@color/ink</color>
-    <color name="mic_pressed_icon">@color/ink</color>
+    <color name="mic_pressed_icon">@color/on_recording</color>
 
-    <color name="settings_surface">@color/porcelain</color>
-    <color name="settings_header_surface">#E6F8F5</color>
-    <color name="settings_header_outline">#B6E8E1</color>
-    <color name="settings_on_ink">#FFFFFF</color>
-    <color name="settings_success">#087E73</color>
-    <color name="settings_pending">#8A5A00</color>
+    <color name="settings_surface">@color/paper</color>
+    <color name="settings_toolbar_surface">@color/ink</color>
+    <color name="settings_toolbar_text">#FFFFFF</color>
+    <color name="settings_header_surface">@color/elevated_surface</color>
+    <color name="settings_header_outline">@color/divider</color>
+    <color name="settings_success">@color/pen_blue</color>
+    <color name="settings_pending">@color/secondary_text</color>
+    <color name="settings_on_ink">@color/settings_toolbar_text</color>
 </resources>

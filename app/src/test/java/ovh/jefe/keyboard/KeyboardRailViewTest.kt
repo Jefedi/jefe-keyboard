@@ -1,8 +1,15 @@
 package ovh.jefe.keyboard
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import androidx.core.graphics.ColorUtils
 import androidx.test.core.app.ApplicationProvider
 import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
@@ -10,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 class KeyboardRailViewTest {
@@ -129,6 +137,57 @@ class KeyboardRailViewTest {
         )
     }
 
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `rail text roles and pressed feedback remain legible`() {
+        val rail = KeyboardRailView(context)
+        val surface = ContextCompat.getColor(context, R.color.keyboard_surface)
+        val pressed = ContextCompat.getColor(context, R.color.suggestion_pressed)
+        val keyText = ContextCompat.getColor(context, R.color.key_text)
+        val secondaryText = ContextCompat.getColor(context, R.color.secondary_text)
+        val actionText = ContextCompat.getColor(context, R.color.pen_blue)
+
+        rail.render(TopRailState.Suggestions(listOf("bonjour")))
+        val suggestion = rail.suggestionViews().single()
+        assertEquals(keyText, suggestion.currentTextColor)
+        assertContrast(suggestion.currentTextColor, surface)
+        assertContrast(suggestion.currentTextColor, pressed)
+        measureAndLayout(rail, 320.dp(context), 48.dp(context))
+        suggestion.isPressed = true
+        suggestion.refreshDrawableState()
+        val bitmap = Bitmap.createBitmap(suggestion.width, suggestion.height, Bitmap.Config.ARGB_8888)
+        suggestion.draw(Canvas(bitmap))
+        assertEquals(pressed, bitmap.getPixel(suggestion.width - 2, suggestion.height / 2))
+
+        listOf(TranslationFeedback.Loading, TranslationFeedback.Success).forEach { feedback ->
+            rail.render(TopRailState.Translation(feedback))
+            val status = textViews(rail).single()
+            assertEquals(keyText, status.currentTextColor)
+            assertContrast(status.currentTextColor, surface)
+        }
+
+        rail.render(TopRailState.Translation(TranslationFeedback.Error))
+        assertEquals(keyText, rail.retryButton().currentTextColor)
+        assertContrast(rail.retryButton().currentTextColor, surface)
+        assertContrast(rail.retryButton().currentTextColor, pressed)
+
+        rail.render(
+            TopRailState.ClipboardPrompt(
+                ClipboardPromptUi("secret", "mot de passe", "Texte", "Coller mot de passe", true),
+            ),
+        )
+        val promptTexts = textViews(rail).associateBy { it.text.toString() }
+        assertEquals(actionText, requireNotNull(promptTexts["Coller"]).currentTextColor)
+        assertEquals(secondaryText, requireNotNull(promptTexts["Contenu sensible ••••••"]).currentTextColor)
+        assertEquals(actionText, requireNotNull(promptTexts["Texte"]).currentTextColor)
+        promptTexts.values.forEach { assertContrast(it.currentTextColor, surface) }
+        assertTrue(
+            promptTexts.values.all {
+                it.gravity and Gravity.VERTICAL_GRAVITY_MASK == Gravity.CENTER_VERTICAL
+            },
+        )
+    }
+
     private fun Int.dp(context: Context): Int =
         (this * context.resources.displayMetrics.density).roundToInt()
 
@@ -138,5 +197,19 @@ class KeyboardRailViewTest {
             View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY),
         )
         view.layout(0, 0, width, height)
+    }
+
+    private fun textViews(view: View): List<TextView> = buildList {
+        fun collect(candidate: View) {
+            if (candidate is TextView) add(candidate)
+            if (candidate is ViewGroup) {
+                (0 until candidate.childCount).forEach { collect(candidate.getChildAt(it)) }
+            }
+        }
+        collect(view)
+    }
+
+    private fun assertContrast(foreground: Int, background: Int) {
+        assertTrue(ColorUtils.calculateContrast(foreground, background) >= 4.5)
     }
 }

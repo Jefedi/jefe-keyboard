@@ -4,10 +4,14 @@
         <item name="colorPrimary">@color/primary</item>
         <item name="colorSecondary">@color/private_teal</item>
         <item name="android:colorAccent">@color/signal_blue</item>
+        <item name="colorSurface">@color/settings_surface</item>
+        <item name="colorOnSurface">@color/ink</item>
+        <item name="colorOnSurfaceVariant">@color/secondary_text</item>
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:navigationBarColor">@color/settings_surface</item>
-        <item name="android:statusBarColor">@color/ink</item>
+        <item name="android:statusBarColor">@color/settings_toolbar_surface</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorBackground">@color/settings_surface</item>
         <item name="android:windowBackground">@color/settings_surface</item>
     </style>
 </resources>

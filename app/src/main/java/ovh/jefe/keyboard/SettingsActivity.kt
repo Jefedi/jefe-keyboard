@@ -104,7 +104,10 @@ class SettingsActivity : AppCompatActivity(),
             if (isReady) R.string.setup_status_ready else R.string.setup_status_in_progress,
         )
         setupStatusBadge.setTextColor(
-            ContextCompat.getColor(this, if (isReady) R.color.settings_success else R.color.slate),
+            ContextCompat.getColor(
+                this,
+                if (isReady) R.color.settings_success else R.color.settings_pending,
+            ),
         )
         setupStatusBadge.visibility = View.VISIBLE
         (supportFragmentManager.findFragmentById(R.id.settings_container) as? SettingsFragment)

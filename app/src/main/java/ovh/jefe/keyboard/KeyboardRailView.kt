@@ -2,6 +2,7 @@ package ovh.jefe.keyboard
 
 import android.content.Context
 import android.content.res.ColorStateList
+import android.graphics.Typeface
 import android.text.TextUtils
 import android.util.AttributeSet
 import android.view.Gravity
@@ -39,6 +40,7 @@ internal class KeyboardRailView @JvmOverloads constructor(
         contentDescription = context.getString(R.string.clipboard_open)
         minimumWidth = dp(48)
         minimumHeight = dp(48)
+        setBackgroundResource(R.drawable.bg_rail_control)
         setOnClickListener { onClipboardTabClick?.invoke() }
     }
     private val content = LinearLayout(context).apply {
@@ -50,6 +52,7 @@ internal class KeyboardRailView @JvmOverloads constructor(
     init {
         orientation = HORIZONTAL
         minimumHeight = dp(48)
+        setBackgroundResource(R.drawable.bg_keyboard_rail)
         addView(clipboard, LayoutParams(dp(48), dp(48)))
         addView(content, LayoutParams(0, dp(48), 1f))
         render(TopRailState.Empty)
@@ -73,6 +76,7 @@ internal class KeyboardRailView @JvmOverloads constructor(
                 tag = SUGGESTION_TAG
                 gravity = Gravity.CENTER
                 minHeight = dp(44)
+                setTextColor(ContextCompat.getColor(context, R.color.key_text))
                 isClickable = true
                 isFocusable = true
                 contentDescription = context.getString(R.string.suggestion_insert, value)
@@ -105,6 +109,9 @@ internal class KeyboardRailView @JvmOverloads constructor(
             addView(
                 TextView(context).apply {
                     setText(R.string.clipboard_paste_action)
+                    gravity = Gravity.CENTER_VERTICAL
+                    setTextColor(ContextCompat.getColor(context, R.color.pen_blue))
+                    typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                     importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
                 },
                 LayoutParams(LayoutParams.WRAP_CONTENT, dp(48)).apply { marginStart = dp(12) },
@@ -112,8 +119,10 @@ internal class KeyboardRailView @JvmOverloads constructor(
             addView(
                 TextView(context).apply {
                     text = safePreview
+                    gravity = Gravity.CENTER_VERTICAL
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
+                    setTextColor(ContextCompat.getColor(context, R.color.secondary_text))
                     importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
                 },
                 LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) },
@@ -122,7 +131,10 @@ internal class KeyboardRailView @JvmOverloads constructor(
                 addView(
                     TextView(context).apply {
                         text = safeType
+                        gravity = Gravity.CENTER_VERTICAL
                         maxLines = 1
+                        setTextColor(ContextCompat.getColor(context, R.color.pen_blue))
+                        typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
                         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
                     },
                     LayoutParams(LayoutParams.WRAP_CONTENT, dp(48)).apply {
@@ -142,6 +154,7 @@ internal class KeyboardRailView @JvmOverloads constructor(
                 contentDescription = context.getString(R.string.clipboard_close_prompt)
                 minimumWidth = dp(48)
                 minimumHeight = dp(48)
+                setBackgroundResource(R.drawable.bg_rail_control)
                 setOnClickListener { onClipboardPromptDismiss?.invoke() }
             },
             LayoutParams(dp(48), dp(48)),
@@ -162,7 +175,11 @@ internal class KeyboardRailView @JvmOverloads constructor(
                 Button(context).apply {
                     tag = RETRY_TAG
                     setText(R.string.rail_translation_error)
+                    isAllCaps = false
                     minHeight = dp(44)
+                    setTextColor(ContextCompat.getColor(context, R.color.key_text))
+                    backgroundTintList = null
+                    setBackgroundResource(R.drawable.bg_rail_control)
                     setOnClickListener { onTranslationRetryClick?.invoke() }
                 },
                 LayoutParams(LayoutParams.MATCH_PARENT, dp(48)),
@@ -181,7 +198,12 @@ internal class KeyboardRailView @JvmOverloads constructor(
                     LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(8) },
                 )
             }
-            addView(TextView(context).apply { setText(label) })
+            addView(
+                TextView(context).apply {
+                    setText(label)
+                    setTextColor(ContextCompat.getColor(context, R.color.key_text))
+                },
+            )
         }
 
     private fun dp(value: Int): Int =

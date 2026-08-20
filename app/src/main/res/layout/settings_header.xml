@@ -25,7 +25,7 @@
         android:layout_marginTop="3dp"
         android:fontFamily="sans-serif"
         android:text="@string/setup_progress_empty"
-        android:textColor="@color/slate"
+        android:textColor="@color/secondary_text"
         android:textSize="13sp" />
 
     <TextView
@@ -35,7 +35,7 @@
         android:layout_marginTop="4dp"
         android:fontFamily="sans-serif-medium"
         android:text="@string/setup_status_in_progress"
-        android:textColor="@color/slate"
+        android:textColor="@color/secondary_text"
         android:textSize="12sp"
         android:visibility="visible" />
 
@@ -48,5 +48,5 @@
         android:max="5"
         android:progress="0"
         android:progressBackgroundTint="@color/settings_header_outline"
-        android:progressTint="@color/signal_blue" />
+        android:progressTint="@color/pen_blue" />
 </LinearLayout>

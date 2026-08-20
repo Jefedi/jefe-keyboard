@@ -198,11 +198,10 @@ open class KeyboardView @JvmOverloads constructor(
     private val specialPaint = paint(R.color.key_bg_special)
     private val pressedPaint = paint(R.color.key_pressed)
     private val outlinePaint = paint(R.color.key_outline, Paint.Style.STROKE).apply { strokeWidth = dp(1) }
-    private val actionPaint = paint(R.color.signal_blue)
+    private val actionPaint = paint(R.color.pen_blue)
     private val actionPressedPaint = paint(R.color.action_pressed)
-    private val microphonePaint = paint(R.color.private_teal)
     private val recordingPaint = paint(R.color.recording_red)
-    private val shiftPaint = paint(R.color.signal_blue)
+    private val shiftPaint = paint(R.color.pen_blue)
     private val textPaint = paint(R.color.key_text).apply {
         textSize = keyTextSize
         textAlign = Paint.Align.CENTER
@@ -231,7 +230,7 @@ open class KeyboardView @JvmOverloads constructor(
     private val iconDefaultColor = ContextCompat.getColor(context, R.color.key_text)
     private val iconMicColor = ContextCompat.getColor(context, R.color.mic_icon)
     private val iconMicPressedColor = ContextCompat.getColor(context, R.color.mic_pressed_icon)
-    private val iconRecordingColor = ContextCompat.getColor(context, R.color.on_action)
+    private val iconRecordingColor = ContextCompat.getColor(context, R.color.on_recording)
     private val disabledRemoteAlpha = (255 * 0.38f).roundToInt()
     private val micIcon = drawable(R.drawable.ic_mic)
     private val translateIcon = drawable(R.drawable.ic_translate)
@@ -299,7 +298,8 @@ open class KeyboardView @JvmOverloads constructor(
     private fun drawKey(canvas: Canvas, key: ComputedKey, pressed: Boolean) {
         val background = backgroundPaintFor(key.def, pressed)
         canvas.drawRoundRect(key.rect, keyCorner, keyCorner, background)
-        if (!pressed && key.def.action !in setOf(KeyAction.ENTER, KeyAction.MIC) &&
+        if (!pressed && key.def.action != KeyAction.ENTER &&
+            !(key.def.action == KeyAction.MIC && isRecording) &&
             !(key.def.action == KeyAction.TRANSLATE && isTranslating) &&
             !(key.def.action == KeyAction.SHIFT && isShifted)
         ) {
@@ -326,7 +326,7 @@ open class KeyboardView @JvmOverloads constructor(
     private fun backgroundPaintFor(definition: KeyDef, pressed: Boolean): Paint = when {
         definition.action == KeyAction.ENTER -> if (pressed) actionPressedPaint else actionPaint
         definition.action == KeyAction.MIC && isRecording -> if (pressed) actionPressedPaint else recordingPaint
-        definition.action == KeyAction.MIC -> if (pressed) pressedPaint else microphonePaint
+        definition.action == KeyAction.MIC -> if (pressed) actionPressedPaint else specialPaint
         definition.action == KeyAction.TRANSLATE && isTranslating -> actionPaint
         definition.action == KeyAction.SHIFT && isShifted -> if (pressed) actionPressedPaint else shiftPaint
         pressed -> pressedPaint

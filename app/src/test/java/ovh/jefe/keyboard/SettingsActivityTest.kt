@@ -31,6 +31,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.GraphicsMode
+import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -93,7 +94,7 @@ class SettingsActivityTest {
         )
 
         assertEquals("Configuration en cours", badge.text.toString())
-        assertEquals(ContextCompat.getColor(activity, R.color.slate), badge.currentTextColor)
+        assertEquals(ContextCompat.getColor(activity, R.color.settings_pending), badge.currentTextColor)
 
         activity.renderSetup(
             SettingsActivity.SetupStatus(
@@ -168,7 +169,7 @@ class SettingsActivityTest {
                 Configuration.UI_MODE_NIGHT_YES
         }
         val darkContext = context.createConfigurationContext(darkConfiguration)
-        val copy = ContextCompat.getColor(darkContext, R.color.slate)
+        val copy = ContextCompat.getColor(darkContext, R.color.secondary_text)
         val surface = ContextCompat.getColor(darkContext, R.color.settings_header_surface)
 
         assertTrue(ColorUtils.calculateContrast(copy, surface) >= 4.5)
@@ -236,9 +237,18 @@ class SettingsActivityTest {
     }
 
     @Test
-    fun `render settings screenshot`() {
-        val output = System.getenv("VISUAL_OUTPUT_DIR")?.let(::File)
-        output?.mkdirs()
+    @Config(qualifiers = "notnight")
+    fun `render light settings screenshot`() {
+        renderSettings("settings-light.png")
+    }
+
+    @Test
+    @Config(qualifiers = "night")
+    fun `render dark settings screenshot`() {
+        renderSettings("settings-dark.png")
+    }
+
+    private fun renderSettings(fileName: String) {
         PreferenceManager.getDefaultSharedPreferences(context)
             .edit()
             .putString("whisper_url", "https://voice.example.test/")
@@ -252,9 +262,9 @@ class SettingsActivityTest {
         val bitmap = Bitmap.createBitmap(1080, 1920, Bitmap.Config.ARGB_8888)
         decor.draw(Canvas(bitmap))
         assertHasVisualContent(bitmap)
-        output?.resolve("settings.png")?.let { file ->
+        System.getenv("VISUAL_OUTPUT_DIR")?.let(::File)?.also(File::mkdirs)?.resolve(fileName)?.let { file ->
             FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-            assertTrue(file.length() > 0)
+            assertTrue(file.isFile && file.length() > 0)
         }
     }
 

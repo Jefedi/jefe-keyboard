@@ -3,6 +3,7 @@ package ovh.jefe.keyboard
 import android.content.Context
 import android.os.Looper
 import android.text.Editable
+import android.text.InputType
 import android.text.Selection
 import android.text.SpannableStringBuilder
 import android.view.View
@@ -73,9 +74,99 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
-    fun `candidate replaces the actual live token`() {
+    fun `existing editor text shows no suggestions before a local edit`() {
         val connection = EditableInputConnection(context(), "bo", 2)
         val (service, root) = startRootService(connection)
+
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `typing a letter enables prefix suggestions`() {
+        val connection = EditableInputConnection(context(), "b", 1)
+        val (service, root) = startRootService(connection)
+
+        root.keyboardView.onKeyChar?.invoke("o")
+
+        assertTrue(root.railView.suggestionViews().map { it.text.toString() }.contains("bon"))
+        service.onDestroy()
+    }
+
+    @Test
+    fun `rejected character does not enable suggestions`() {
+        val connection = RejectingCommitInputConnection(context(), "b", 1)
+        val (service, root) = startRootService(connection)
+
+        root.keyboardView.onKeyChar?.invoke("o")
+
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `accepted space enables context but newline and rejected space do not`() {
+        val accepted = EditableInputConnection(context(), "je", 2)
+        val (service, root) = startRootService(accepted)
+        root.keyboardView.onKeySpace?.invoke()
+        assertEquals(
+            listOf("suis", "vais", "veux"),
+            root.railView.suggestionViews().map { it.text.toString() },
+        )
+        service.onDestroy()
+
+        val newline = EditableInputConnection(context(), "je", 2)
+        val (newlineService, newlineRoot) = startRootService(newline)
+        newlineRoot.keyboardView.onKeyEnter?.invoke()
+        assertTrue(newlineRoot.railView.suggestionViews().isEmpty())
+        newlineService.onDestroy()
+
+        val rejected = RejectingCommitInputConnection(context(), "je", 2)
+        val (rejectedService, rejectedRoot) = startRootService(rejected)
+        rejectedRoot.keyboardView.onKeySpace?.invoke()
+        assertTrue(rejectedRoot.railView.suggestionViews().isEmpty())
+        rejectedService.onDestroy()
+    }
+
+    @Test
+    fun `deleting to empty and reopening input view clear suggestions`() {
+        val connection = EditableInputConnection(context(), "b", 1)
+        val (service, root) = startRootService(connection)
+        root.keyboardView.onKeyChar?.invoke("o")
+        assertTrue(root.railView.suggestionViews().isNotEmpty())
+
+        root.keyboardView.onKeyDelete?.invoke()
+        root.keyboardView.onKeyDelete?.invoke()
+        assertTrue(root.railView.suggestionViews().isEmpty())
+
+        connection.replaceAll("bo", 2)
+        root.keyboardView.onKeyChar?.invoke("n")
+        service.onStartInputView(editorInfo(), true)
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `private field keeps the rail empty`() {
+        val connection = EditableInputConnection(context(), "b", 1)
+        val service = testService(connection).apply {
+            testEditorInfo = editorInfo(
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            )
+        }
+        val root = createRootAndStart(service, info = requireNotNull(service.testEditorInfo))
+
+        root.keyboardView.onKeyChar?.invoke("o")
+
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `candidate replaces the actual live token`() {
+        val connection = EditableInputConnection(context(), "b", 1)
+        val (service, root) = startRootService(connection)
+        root.keyboardView.onKeyChar?.invoke("o")
         assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
 
         root.railView.suggestionViews().first { it.text == "bon" }.performClick()
@@ -86,8 +177,9 @@ class JefeKeyboardServiceTest {
 
     @Test
     fun `candidate commit failure leaves the original token intact with one atomic replacement`() {
-        val connection = RejectingCommitInputConnection(context(), "bo", 2)
+        val connection = RejectingSuggestionInputConnection(context(), "b", 1)
         val (service, root) = startRootService(connection)
+        root.keyboardView.onKeyChar?.invoke("o")
         assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
 
         root.railView.suggestionViews().first { it.text == "bon" }.performClick()
@@ -100,9 +192,11 @@ class JefeKeyboardServiceTest {
 
     @Test
     fun `candidate does not commit when editor rejects selecting the live token`() {
-        val connection = RejectingSelectionInputConnection(context(), "bo", 2)
+        val connection = RejectingSelectionInputConnection(context(), "b", 1)
         val (service, root) = startRootService(connection)
+        root.keyboardView.onKeyChar?.invoke("o")
         assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
+        connection.rejectSelections = true
 
         root.railView.suggestionViews().first { it.text == "bon" }.performClick()
 
@@ -116,13 +210,15 @@ class JefeKeyboardServiceTest {
         listOf(ExtractedTextMode.NULL, ExtractedTextMode.INVALID_SELECTION).forEach { mode ->
             val connection = EditableInputConnection(
                 context(),
-                "bo",
-                2,
-                extractedTextMode = mode,
+                "b",
+                1,
             )
             val (service, root) = startRootService(connection)
 
-            root.railView.onSuggestionClick?.invoke("bon")
+            root.keyboardView.onKeyChar?.invoke("o")
+            val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+            connection.extractedTextMode = mode
+            candidate.performClick()
 
             assertEquals("bo", connection.text())
             service.onDestroy()
@@ -131,13 +227,14 @@ class JefeKeyboardServiceTest {
 
     @Test
     fun `candidate never replaces unrelated text after a cursor move`() {
-        val connection = EditableInputConnection(context(), "bo ici", 2)
+        val connection = EditableInputConnection(context(), "b ici", 1)
         val (service, root) = startRootService(connection)
-        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
+        root.keyboardView.onKeyChar?.invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
         connection.select(6)
         service.onUpdateSelection(2, 2, 6, 6, -1, -1)
 
-        root.railView.onSuggestionClick?.invoke("bon")
+        candidate.performClick()
 
         assertEquals("bo ici", connection.text())
         service.onDestroy()
@@ -145,14 +242,15 @@ class JefeKeyboardServiceTest {
 
     @Test
     fun `candidate from a prior session never edits the new connection`() {
-        val first = EditableInputConnection(context(), "bo", 2)
+        val first = EditableInputConnection(context(), "b", 1)
         val (service, root) = startRootService(first)
-        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
+        root.keyboardView.onKeyChar?.invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
         val second = EditableInputConnection(context(), "secret", 6)
         service.testConnection = second
 
         service.onStartInput(editorInfo(), false)
-        root.railView.onSuggestionClick?.invoke("bon")
+        candidate.performClick()
 
         assertEquals("bo", first.text())
         assertEquals("secret", second.text())
@@ -194,9 +292,10 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
-    fun `external selection changes clear and refresh suggestions from live text`() {
-        val connection = EditableInputConnection(context(), "je ", 3)
+    fun `external selection clears suggestions until the next local edit`() {
+        val connection = EditableInputConnection(context(), "je", 2)
         val (service, root) = startRootService(connection)
+        root.keyboardView.onKeySpace?.invoke()
         assertEquals(
             listOf("suis", "vais", "veux"),
             root.railView.suggestionViews().map { it.text.toString() },
@@ -208,7 +307,33 @@ class JefeKeyboardServiceTest {
 
         connection.replaceAll("bo", 2)
         service.onUpdateSelection(0, 2, 2, 2, -1, -1)
-        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `private editor never starts translation or dictation`() {
+        val calls = AtomicInteger()
+        val connection = EditableInputConnection(context(), "secret", 0, 6)
+        val service = testService(connection).apply {
+            translation = { calls.incrementAndGet(); RemoteResult.Success("x") }
+            transcription = { calls.incrementAndGet(); RemoteResult.Success("x") }
+            recorderFactory = {
+                calls.incrementAndGet()
+                FakeAudioRecorder()
+            }
+        }
+        val info = editorInfo(
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+        )
+        val root = createRootAndStart(service, info = info)
+        grantMicrophonePermission()
+
+        root.keyboardView.onTranslateClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
+        drainMainLooper()
+
+        assertEquals(0, calls.get())
         service.onDestroy()
     }
 
@@ -612,7 +737,7 @@ private open class EditableInputConnection(
     selectionStart: Int,
     selectionEnd: Int = selectionStart,
     private val documentStartOffset: Int = 0,
-    private val extractedTextMode: ExtractedTextMode = ExtractedTextMode.VALID,
+    var extractedTextMode: ExtractedTextMode = ExtractedTextMode.VALID,
     private val fixedTextBeforeCursor: String? = null,
     private val fixedTextAfterCursor: String? = null,
 ) : BaseInputConnection(View(context), true) {
@@ -694,18 +819,40 @@ private class RejectingCommitInputConnection(
     }
 }
 
-private class RejectingSelectionInputConnection(
+private class RejectingSuggestionInputConnection(
     context: Context,
     text: String,
     selectionStart: Int,
 ) : EditableInputConnection(context, text, selectionStart) {
     val commitAttempts = mutableListOf<String>()
 
-    override fun setSelection(start: Int, end: Int): Boolean = false
+    override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        val value = text?.toString().orEmpty()
+        if (value == "bon ") {
+            commitAttempts += value
+            return false
+        }
+        return super.commitText(text, newCursorPosition)
+    }
+}
+
+private class RejectingSelectionInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+) : EditableInputConnection(context, text, selectionStart) {
+    val commitAttempts = mutableListOf<String>()
+    var rejectSelections = false
+
+    override fun setSelection(start: Int, end: Int): Boolean =
+        !rejectSelections && super.setSelection(start, end)
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-        commitAttempts += text?.toString().orEmpty()
-        return false
+        if (rejectSelections) {
+            commitAttempts += text?.toString().orEmpty()
+            return false
+        }
+        return super.commitText(text, newCursorPosition)
     }
 }
 

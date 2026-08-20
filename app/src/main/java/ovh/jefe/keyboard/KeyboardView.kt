@@ -14,6 +14,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
+import kotlin.math.roundToInt
 
 /** French QWERTY keyboard with a compact, private-service visual identity. */
 open class KeyboardView @JvmOverloads constructor(
@@ -222,6 +223,7 @@ open class KeyboardView @JvmOverloads constructor(
     private val iconMicColor = ContextCompat.getColor(context, R.color.mic_icon)
     private val iconMicPressedColor = ContextCompat.getColor(context, R.color.mic_pressed_icon)
     private val iconRecordingColor = ContextCompat.getColor(context, R.color.on_action)
+    private val disabledRemoteAlpha = (255 * 0.38f).roundToInt()
     private val micIcon = drawable(R.drawable.ic_mic)
     private val translateIcon = drawable(R.drawable.ic_translate)
 
@@ -299,7 +301,10 @@ open class KeyboardView @JvmOverloads constructor(
             null -> null
         }
         if (icon != null) {
+            val previousAlpha = icon.alpha
+            if (!remoteAllowed(key.def.action)) icon.alpha = disabledRemoteAlpha
             drawIcon(canvas, icon, key.rect, foregroundColorFor(key.def, pressed))
+            icon.alpha = previousAlpha
             return
         }
         val label = displayLabel(key.def)
@@ -449,25 +454,30 @@ open class KeyboardView @JvmOverloads constructor(
         longPressRunnable = null
     }
 
-    private fun handleKey(key: ComputedKey): Boolean = when (key.def.action) {
-        KeyAction.CHAR -> {
-            val char = key.def.char ?: return false
-            onKeyChar?.invoke((if (isShifted && !symbolMode) char.uppercaseChar() else char).toString())
-            if (isShifted && !symbolMode) isShifted = false
-            true
-        }
-        KeyAction.DELETE -> onKeyDelete.invokeIfPresent()
-        KeyAction.ENTER -> onKeyEnter.invokeIfPresent()
-        KeyAction.SPACE -> onKeySpace.invokeIfPresent()
-        KeyAction.SHIFT -> {
-            if (symbolMode) symbolMode = false else isShifted = !isShifted
-            true
-        }
-        KeyAction.MIC -> onMicClick.invokeIfPresent()
-        KeyAction.TRANSLATE -> onTranslateClick.invokeIfPresent()
-        KeyAction.SYMBOLS_TOGGLE -> {
-            symbolMode = !symbolMode
-            true
+    private fun handleKey(key: ComputedKey): Boolean {
+        if (!remoteAllowed(key.def.action)) return false
+        return when (key.def.action) {
+            KeyAction.CHAR -> {
+                val char = key.def.char ?: return false
+                onKeyChar?.invoke(
+                    (if (isShifted && !symbolMode) char.uppercaseChar() else char).toString(),
+                )
+                if (isShifted && !symbolMode) isShifted = false
+                true
+            }
+            KeyAction.DELETE -> onKeyDelete.invokeIfPresent()
+            KeyAction.ENTER -> onKeyEnter.invokeIfPresent()
+            KeyAction.SPACE -> onKeySpace.invokeIfPresent()
+            KeyAction.SHIFT -> {
+                if (symbolMode) symbolMode = false else isShifted = !isShifted
+                true
+            }
+            KeyAction.MIC -> onMicClick.invokeIfPresent()
+            KeyAction.TRANSLATE -> onTranslateClick.invokeIfPresent()
+            KeyAction.SYMBOLS_TOGGLE -> {
+                symbolMode = !symbolMode
+                true
+            }
         }
     }
 
@@ -492,8 +502,11 @@ open class KeyboardView @JvmOverloads constructor(
     }
 
     private fun hitTest(x: Float, y: Float): ComputedKey? {
-        return computedKeys.firstOrNull { it.rect.contains(x, y) }
+        return computedKeys.firstOrNull { it.rect.contains(x, y) && remoteAllowed(it.def.action) }
     }
+
+    private fun remoteAllowed(action: KeyAction): Boolean =
+        remoteActionsEnabled || (action != KeyAction.MIC && action != KeyAction.TRANSLATE)
 
     private fun displayLabel(definition: KeyDef): String =
         if (isShifted && definition.char != null && !symbolMode) {

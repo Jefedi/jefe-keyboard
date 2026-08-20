@@ -65,6 +65,7 @@ open class JefeKeyboardService : InputMethodService() {
     private var pendingEnterAction = EditorInfo.IME_ACTION_UNSPECIFIED
     private var sessionGeneration = 0L
     private var suggestionSnapshot: SuggestionSnapshot? = null
+    private val suggestionGate = SuggestionSessionGate()
 
     private var recordingMode = false
     private var recorder: AudioRecorder? = null
@@ -111,20 +112,22 @@ open class JefeKeyboardService : InputMethodService() {
         super.onStartInput(info, restarting)
         stopRecording(launchTranscription = false)
         resetSession()
-        editorPrivacy = EditorPrivacyPolicy.evaluate(info)
         pendingEnterAction = resolveEnterAction(info?.imeOptions)
+        editorPrivacy = EditorPrivacyPolicy.evaluate(info)
+        suggestionGate.startSession()
         keyboardView?.let { view ->
             view.enterAction = pendingEnterAction
             view.isRecording = false
             view.remoteActionsEnabled =
                 editorPrivacy.allowTranslation || editorPrivacy.allowDictation
         }
+        invalidateSuggestions()
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         keyboardView?.enterAction = pendingEnterAction
-        updateSuggestions()
+        invalidateSuggestions()
     }
 
     override fun onUpdateSelection(
@@ -143,7 +146,8 @@ open class JefeKeyboardService : InputMethodService() {
             candidatesStart,
             candidatesEnd,
         )
-        updateSuggestions()
+        val range = EditorSelectionRange(newSelStart, newSelEnd)
+        if (!suggestionGate.recordSelectionUpdate(range)) invalidateSuggestions()
     }
 
     private fun setupKeyboardCallbacks(view: KeyboardView) {
@@ -181,19 +185,26 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun handleChar(char: String) {
-        currentInputConnection?.commitText(char, 1)
-        updateSuggestions()
+        val connection = currentInputConnection ?: return
+        if (connection.commitText(char, 1)) {
+            recordSuccessfulLocalMutation(connection, SuggestionMutation.CHARACTER)
+        } else {
+            invalidateSuggestions()
+        }
     }
 
     private fun handleDelete() {
         val connection = currentInputConnection ?: return
-        val selectedText = connection.getSelectedText(0)
-        if (!selectedText.isNullOrEmpty()) {
+        val success = if (!connection.getSelectedText(0).isNullOrEmpty()) {
             connection.commitText("", 1)
         } else {
             connection.deleteSurroundingTextInCodePoints(1, 0)
         }
-        updateSuggestions()
+        if (success) {
+            recordSuccessfulLocalMutation(connection, SuggestionMutation.DELETE)
+        } else {
+            invalidateSuggestions()
+        }
     }
 
     private fun handleEnter() {
@@ -209,12 +220,16 @@ open class JefeKeyboardService : InputMethodService() {
 
             else -> connection.commitText("\n", 1)
         }
-        updateSuggestions()
+        invalidateSuggestions()
     }
 
     private fun handleSpace() {
-        currentInputConnection?.commitText(" ", 1)
-        updateSuggestions()
+        val connection = currentInputConnection ?: return
+        if (connection.commitText(" ", 1)) {
+            recordSuccessfulLocalMutation(connection, SuggestionMutation.SPACE)
+        } else {
+            invalidateSuggestions()
+        }
     }
 
     private fun acceptSuggestion(word: String) {
@@ -242,33 +257,53 @@ open class JefeKeyboardService : InputMethodService() {
 
         if (!connection.commitText("$word ", 1)) {
             restoreCollapsedSelection(connection, cursor, tokenStart)
-            updateSuggestions()
+            invalidateSuggestions()
             return
         }
+        recordSuccessfulLocalMutation(connection, SuggestionMutation.SUGGESTION)
+    }
+
+    private fun currentRange(connection: InputConnection): EditorSelectionRange? {
+        val extracted = captureExtractedSelection(connection) ?: return null
+        return EditorSelectionRange(
+            extracted.absoluteSelectionStart,
+            extracted.absoluteSelectionEnd,
+        )
+    }
+
+    private fun recordSuccessfulLocalMutation(
+        connection: InputConnection,
+        mutation: SuggestionMutation,
+    ) {
+        suggestionGate.recordSuccessfulMutation(mutation, currentRange(connection))
         updateSuggestions()
     }
 
-    private fun updateSuggestions() {
-        val connection = currentInputConnection
-        if (rootView == null || connection == null || !connection.getSelectedText(0).isNullOrEmpty()) {
-            suggestionSnapshot = null
-            setSuggestions(emptyList())
-            return
-        }
+    private fun invalidateSuggestions() {
+        suggestionGate.invalidate()
+        suggestionSnapshot = null
+        setSuggestions(emptyList())
+    }
 
-        val textBeforeCursor = connection.getTextBeforeCursor(MAX_TEXT_CONTEXT, 0)
-            ?.toString()
-            .orEmpty()
-        val context = TextContextParser.parse(textBeforeCursor)
+    private fun updateSuggestions() {
+        val connection = currentInputConnection ?: return invalidateSuggestions()
+        val selection = currentRange(connection) ?: return invalidateSuggestions()
+        val textBeforeCursor = connection.getTextBeforeCursor(MAX_TEXT_CONTEXT, 0)?.toString()
+        val context = SuggestionPolicy.contextOrNull(
+            SuggestionPolicyInput(
+                textBeforeCursor = textBeforeCursor,
+                selectionCollapsed = selection.isCollapsed,
+                localMutationEligible = suggestionGate.allowsSuggestionsAt(selection),
+                allowSuggestions = editorPrivacy.allowSuggestions,
+            ),
+        ) ?: return invalidateSuggestions()
         val suggestions = predictor.suggest(context.currentWord, context.lastWord)
         val absoluteCursor = captureCandidateCursor(connection, context.currentWord)
-        suggestionSnapshot = if (suggestions.isEmpty() || absoluteCursor == null) {
-            null
-        } else {
+        suggestionSnapshot = if (suggestions.isEmpty() || absoluteCursor == null) null else {
             SuggestionSnapshot(
                 sessionGeneration,
                 connection,
-                textBeforeCursor,
+                requireNotNull(textBeforeCursor),
                 absoluteCursor,
                 suggestions,
             )
@@ -285,6 +320,7 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun startRecording() {
+        if (!editorPrivacy.allowDictation) return
         if (
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -389,7 +425,7 @@ open class JefeKeyboardService : InputMethodService() {
                 when (result) {
                     is RemoteResult.Success -> {
                         if (connection.commitText(result.value, 1)) {
-                            updateSuggestions()
+                            invalidateSuggestions()
                         } else {
                             showEditorFailure()
                         }
@@ -420,6 +456,7 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun translateSelection() {
+        if (!editorPrivacy.allowTranslation) return
         val connection = currentInputConnection ?: return
         val selectedText = connection.getSelectedText(0)?.toString()
         if (selectedText.isNullOrBlank()) {
@@ -454,7 +491,7 @@ open class JefeKeyboardService : InputMethodService() {
                             "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
                         )
                     } else if (connection.commitText(result.value, 1)) {
-                        updateSuggestions()
+                        invalidateSuggestions()
                         Toast.makeText(
                             this@JefeKeyboardService,
                             "Traduit ✓",

@@ -197,6 +197,29 @@ class KeyboardViewTest {
     }
 
     @Test
+    fun `disabled remote actions ignore touches while local keys remain interactive`() {
+        val remoteActions = mutableListOf<String>()
+        val committed = mutableListOf<String>()
+        view.onMicClick = { remoteActions += "mic" }
+        view.onTranslateClick = { remoteActions += "translate" }
+        view.onKeyChar = committed::add
+        view.remoteActionsEnabled = false
+        val keys = view.renderedKeys()
+
+        listOf(KeyboardView.KeyAction.MIC, KeyboardView.KeyAction.TRANSLATE).forEach { action ->
+            val key = keys.single { it.action == action }
+            tap(key.centerX, key.centerY)
+        }
+        val q = keys.single { it.action == KeyboardView.KeyAction.CHAR && it.label == "q" }
+        tap(q.centerX, q.centerY)
+
+        assertTrue(remoteActions.isEmpty())
+        assertEquals(listOf("q"), committed)
+        assertEquals(1, view.clickCount)
+        assertEquals(1, view.hapticCount)
+    }
+
+    @Test
     fun `night pressed mic and enter keep accessible foreground contrast`() {
         val darkConfiguration = Configuration(view.resources.configuration).apply {
             uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or

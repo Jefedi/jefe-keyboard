@@ -20,7 +20,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 internal interface AudioRecorder {
     fun prepareAndStart(outputFile: File)
@@ -107,9 +106,7 @@ open class JefeKeyboardService : InputMethodService() {
         super.onStartInput(info, restarting)
         stopRecording(launchTranscription = false)
         resetSession()
-        pendingEnterAction = info?.imeOptions
-            ?.and(EditorInfo.IME_MASK_ACTION)
-            ?: EditorInfo.IME_ACTION_UNSPECIFIED
+        pendingEnterAction = resolveEnterAction(info?.imeOptions)
         keyboardView?.let { view ->
             view.enterAction = pendingEnterAction
             view.suggestions = emptyList()
@@ -357,12 +354,15 @@ open class JefeKeyboardService : InputMethodService() {
         Toast.makeText(this, "Transcription…", Toast.LENGTH_SHORT).show()
         sessionScope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
-                val result = withContext(Dispatchers.IO) { transcribeAudio(file) }
+                val result = transcribeAudio(file)
                 if (!isCurrentSession(generation, connection)) return@launch
                 when (result) {
                     is RemoteResult.Success -> {
-                        connection.commitText(result.value, 1)
-                        updateSuggestions()
+                        if (connection.commitText(result.value, 1)) {
+                            updateSuggestions()
+                        } else {
+                            showEditorFailure()
+                        }
                     }
 
                     is RemoteResult.Failure -> showRemoteFailure(result.message)
@@ -376,7 +376,7 @@ open class JefeKeyboardService : InputMethodService() {
 
     internal open fun createAudioRecorder(): AudioRecorder = AndroidAudioRecorder()
 
-    internal open fun transcribeAudio(file: File): RemoteResult<String> {
+    internal open suspend fun transcribeAudio(file: File): RemoteResult<String> {
         val preferences = PreferenceManager.getDefaultSharedPreferences(this)
         val url = preferences.getString("whisper_url", "").orEmpty()
         if (url.isBlank()) {
@@ -409,7 +409,7 @@ open class JefeKeyboardService : InputMethodService() {
         val generation = sessionGeneration
         Toast.makeText(this, "Traduction…", Toast.LENGTH_SHORT).show()
         sessionScope.launch {
-            val result = withContext(Dispatchers.IO) { translateText(selection.selectedText) }
+            val result = translateText(selection.selectedText)
             if (
                 !isCurrentSession(generation, connection) ||
                 captureSelection(connection, connection.getSelectedText(0)?.toString()) != selection
@@ -419,9 +419,20 @@ open class JefeKeyboardService : InputMethodService() {
 
             when (result) {
                 is RemoteResult.Success -> {
-                    connection.commitText(result.value, 1)
-                    updateSuggestions()
-                    Toast.makeText(this@JefeKeyboardService, "Traduit ✓", Toast.LENGTH_SHORT).show()
+                    if (result.value.isBlank()) {
+                        showRemoteFailure(
+                            "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",
+                        )
+                    } else if (connection.commitText(result.value, 1)) {
+                        updateSuggestions()
+                        Toast.makeText(
+                            this@JefeKeyboardService,
+                            "Traduit ✓",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    } else {
+                        showEditorFailure()
+                    }
                 }
 
                 is RemoteResult.Failure -> showRemoteFailure(result.message)
@@ -429,7 +440,7 @@ open class JefeKeyboardService : InputMethodService() {
         }
     }
 
-    internal open fun translateText(text: String): RemoteResult<String> {
+    internal open suspend fun translateText(text: String): RemoteResult<String> {
         val preferences = PreferenceManager.getDefaultSharedPreferences(this)
         val url = preferences.getString("translate_url", "").orEmpty()
         if (url.isBlank()) {
@@ -517,6 +528,13 @@ open class JefeKeyboardService : InputMethodService() {
         return generation == sessionGeneration && currentInputConnection === connection
     }
 
+    private fun resolveEnterAction(imeOptions: Int?): Int {
+        if (imeOptions == null || imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0) {
+            return EditorInfo.IME_ACTION_UNSPECIFIED
+        }
+        return imeOptions and EditorInfo.IME_MASK_ACTION
+    }
+
     private fun resetSession() {
         sessionGeneration += 1
         sessionJob.cancel()
@@ -544,6 +562,14 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun showRemoteFailure(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun showEditorFailure() {
+        Toast.makeText(
+            this,
+            "L'éditeur a refusé le texte. Touchez le champ et réessayez.",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 
     override fun hideWindow() {

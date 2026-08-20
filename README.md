@@ -44,6 +44,6 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## Confidentialité et portée de l'artefact
 
-La saisie et les suggestions restent sur l'appareil. La dictée et la traduction n'envoient des données qu'aux services HTTPS que vous configurez ; aucun service cloud tiers n'est imposé. Les sauvegardes Android de l'application sont désactivées afin de ne pas inclure les préférences contenant des secrets.
+La saisie et les suggestions restent sur l'appareil. La dictée et la traduction n'envoient des données qu'aux services HTTPS que vous configurez ; aucun service cloud tiers n'est imposé. L'application demande à Android de désactiver sa sauvegarde et exclut explicitement les préférences du cloud Android comme du transfert direct entre appareils, afin que les secrets enregistrés ne soient pas migrés.
 
 Cet APK est signé avec la clé de débogage Android pour une installation et des tests directs. Ce n'est pas une version de publication ni un artefact destiné au Play Store.

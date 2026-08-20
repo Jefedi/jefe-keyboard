@@ -136,6 +136,32 @@ class SettingsActivityTest {
     }
 
     @Test
+    fun `default keyboard status requires the exact service component`() {
+        val activity = createActivity()
+
+        listOf(
+            "${activity.packageName}.lookalike/.JefeKeyboardService",
+            "${activity.packageName}/.DifferentKeyboardService",
+        ).forEach { component ->
+            Settings.Secure.putString(
+                activity.contentResolver,
+                Settings.Secure.DEFAULT_INPUT_METHOD,
+                component,
+            )
+
+            assertFalse(activity.setupStatus().imeDefault)
+        }
+
+        Settings.Secure.putString(
+            activity.contentResolver,
+            Settings.Secure.DEFAULT_INPUT_METHOD,
+            "${activity.packageName}/.JefeKeyboardService",
+        )
+
+        assertTrue(activity.setupStatus().imeDefault)
+    }
+
+    @Test
     fun `night setup header secondary copy meets contrast target`() {
         val darkConfiguration = Configuration(context.resources.configuration).apply {
             uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or

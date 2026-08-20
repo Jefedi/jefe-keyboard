@@ -15,6 +15,8 @@ import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -171,6 +173,26 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `no enter action flag renders and commits the default newline action`() {
+        val connection = EditableInputConnection(context(), "texte", 5)
+        val actionWithFlag = EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_ENTER_ACTION
+        val (service, view) = startService(connection, actionWithFlag)
+
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED),
+        )
+        view.layout(0, 0, 1080, view.measuredHeight)
+        val enter = view.renderedKeys().single { it.action == KeyboardView.KeyAction.ENTER }
+        view.onKeyEnter?.invoke()
+
+        assertEquals("Retour", enter.label)
+        assertTrue(connection.editorActions.isEmpty())
+        assertEquals("texte\n", connection.text())
+        service.onDestroy()
+    }
+
+    @Test
     fun `external selection changes clear and refresh suggestions from live text`() {
         val connection = EditableInputConnection(context(), "je ", 3)
         val (service, view) = startService(connection)
@@ -197,6 +219,41 @@ class JefeKeyboardServiceTest {
         idleMainLooperUntil { connection.text() == "hello monde" }
 
         assertEquals("hello monde", connection.text())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation whitespace success is rejected without replacing the selection`() {
+        val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
+        val service = testService(connection)
+        service.translation = { RemoteResult.Success("  \n\t  ") }
+        val view = createViewAndStart(service)
+
+        view.onTranslateClick?.invoke()
+        drainMainLooper()
+
+        assertEquals("bonjour monde", connection.text())
+        assertEquals(0, connection.selectionStart())
+        assertEquals(7, connection.selectionEnd())
+        assertTrue(ShadowToast.getTextOfLatestToast().contains("vide", ignoreCase = true))
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation commit rejection keeps selection and reports editor failure`() {
+        val connection = RejectingCommitInputConnection(context(), "bonjour monde", 0, 7)
+        val service = testService(connection)
+        service.translation = { RemoteResult.Success("hello") }
+        val view = createViewAndStart(service)
+
+        view.onTranslateClick?.invoke()
+        idleMainLooperUntil { connection.commitAttempts.isNotEmpty() }
+
+        assertEquals(listOf("hello"), connection.commitAttempts)
+        assertEquals("bonjour monde", connection.text())
+        assertEquals(0, connection.selectionStart())
+        assertEquals(7, connection.selectionEnd())
+        assertTrue(ShadowToast.getTextOfLatestToast().contains("éditeur", ignoreCase = true))
         service.onDestroy()
     }
 
@@ -322,6 +379,27 @@ class JefeKeyboardServiceTest {
         assertEquals("privé", second.text())
         assertEquals(1, recorder.releaseCount)
         assertFalse(recorder.outputFile!!.exists())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `dictation commit rejection reports editor failure without claiming a commit`() {
+        val connection = RejectingCommitInputConnection(context(), "avant ", 6)
+        val recorder = FakeAudioRecorder()
+        val service = testService(connection)
+        service.recorderFactory = { recorder }
+        service.transcription = { RemoteResult.Success("dictée") }
+        val view = createViewAndStart(service)
+        grantMicrophonePermission()
+
+        view.onMicClick?.invoke()
+        view.onMicClick?.invoke()
+        idleMainLooperUntil { connection.commitAttempts.isNotEmpty() }
+
+        assertEquals(listOf("dictée"), connection.commitAttempts)
+        assertEquals("avant ", connection.text())
+        assertTrue(ShadowToast.getTextOfLatestToast().contains("éditeur", ignoreCase = true))
+        assertEquals(1, recorder.releaseCount)
         service.onDestroy()
     }
 
@@ -480,8 +558,8 @@ internal class TestJefeKeyboardService : JefeKeyboardService() {
     var testConnection: InputConnection? = null
     var testEditorInfo: EditorInfo? = null
     var recorderFactory: (() -> AudioRecorder)? = null
-    var transcription: ((File) -> RemoteResult<String>)? = null
-    var translation: ((String) -> RemoteResult<String>)? = null
+    var transcription: (suspend (File) -> RemoteResult<String>)? = null
+    var translation: (suspend (String) -> RemoteResult<String>)? = null
 
     override fun getCurrentInputConnection(): InputConnection? = testConnection
 
@@ -491,11 +569,11 @@ internal class TestJefeKeyboardService : JefeKeyboardService() {
         return recorderFactory?.invoke() ?: super.createAudioRecorder()
     }
 
-    override fun transcribeAudio(file: File): RemoteResult<String> {
+    override suspend fun transcribeAudio(file: File): RemoteResult<String> {
         return transcription?.invoke(file) ?: super.transcribeAudio(file)
     }
 
-    override fun translateText(text: String): RemoteResult<String> {
+    override suspend fun translateText(text: String): RemoteResult<String> {
         return translation?.invoke(text) ?: super.translateText(text)
     }
 }
@@ -584,7 +662,8 @@ private class RejectingCommitInputConnection(
     context: Context,
     text: String,
     selectionStart: Int,
-) : EditableInputConnection(context, text, selectionStart) {
+    selectionEnd: Int = selectionStart,
+) : EditableInputConnection(context, text, selectionStart, selectionEnd) {
     val commitAttempts = mutableListOf<String>()
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
@@ -635,14 +714,14 @@ private class DelayedRemoteResult(private val value: String) {
     val release = CountDownLatch(1)
     val returned = CountDownLatch(1)
 
-    fun complete(@Suppress("UNUSED_PARAMETER") text: String): RemoteResult<String> = awaitResult()
+    suspend fun complete(@Suppress("UNUSED_PARAMETER") text: String): RemoteResult<String> = awaitResult()
 
-    fun completeFile(@Suppress("UNUSED_PARAMETER") file: File): RemoteResult<String> = awaitResult()
+    suspend fun completeFile(@Suppress("UNUSED_PARAMETER") file: File): RemoteResult<String> = awaitResult()
 
-    private fun awaitResult(): RemoteResult<String> {
+    private suspend fun awaitResult(): RemoteResult<String> = withContext(Dispatchers.IO) {
         started.countDown()
         assertTrue(release.await(5, TimeUnit.SECONDS))
         returned.countDown()
-        return RemoteResult.Success(value)
+        RemoteResult.Success(value)
     }
 }

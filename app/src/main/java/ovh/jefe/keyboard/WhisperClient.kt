@@ -37,7 +37,7 @@ class WhisperClient(
      * @param language optional language hint (e.g. "fr")
      * @return transcribed text or an actionable failure
      */
-    fun transcribe(audioFile: File, language: String? = null): RemoteResult<String> {
+    suspend fun transcribe(audioFile: File, language: String? = null): RemoteResult<String> {
         return try {
             val baseUrl = when (val parsed = ServiceEndpoint.parse(url)) {
                 is RemoteResult.Success -> parsed.value
@@ -51,7 +51,7 @@ class WhisperClient(
                 .addFormDataPart(
                     "file",
                     audioFile.name,
-                    audioFile.asRequestBody("audio/*".toMediaType()),
+                    audioFile.asRequestBody("audio/mp4".toMediaType()),
                 )
                 .addFormDataPart("model", model)
 
@@ -67,7 +67,7 @@ class WhisperClient(
                 requestBuilder.header("Authorization", "Bearer $apiKey")
             }
 
-            client.newCall(requestBuilder.build()).execute().use { response ->
+            client.newCall(requestBuilder.build()).awaitResponse().use { response ->
                 if (!response.isSuccessful) {
                     val redirect = response.header("Location")
                         ?.let(response.request.url::resolve)

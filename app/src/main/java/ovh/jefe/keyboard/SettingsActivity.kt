@@ -1,6 +1,7 @@
 package ovh.jefe.keyboard
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -123,9 +124,13 @@ class SettingsActivity : AppCompatActivity(),
         return manager.enabledInputMethodList.any { it.packageName == packageName }
     }
 
-    private fun isImeDefault(): Boolean =
-        Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
-            ?.contains(packageName) == true
+    private fun isImeDefault(): Boolean {
+        val configured = Settings.Secure.getString(
+            contentResolver,
+            Settings.Secure.DEFAULT_INPUT_METHOD,
+        )?.let(ComponentName::unflattenFromString)
+        return configured == ComponentName(this, JefeKeyboardService::class.java)
+    }
 
     private fun hasMicrophonePermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==

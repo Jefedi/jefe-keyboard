@@ -34,7 +34,7 @@ class TranslateClient(
      * @param text text to translate
      * @return translated text or an actionable failure
      */
-    fun translate(text: String): RemoteResult<String> {
+    suspend fun translate(text: String): RemoteResult<String> {
         return try {
             val baseUrl = when (val parsed = ServiceEndpoint.parse(url)) {
                 is RemoteResult.Success -> parsed.value
@@ -58,7 +58,7 @@ class TranslateClient(
                 .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            client.newCall(request).execute().use { response ->
+            client.newCall(request).awaitResponse().use { response ->
                 if (!response.isSuccessful) {
                     val redirect = response.header("Location")
                         ?.let(response.request.url::resolve)
@@ -76,6 +76,7 @@ class TranslateClient(
                 } else {
                     val translatedText = JSONObject(response.body?.string().orEmpty())
                         .optString("translatedText", "")
+                        .trim()
                     if (translatedText.isEmpty()) {
                         RemoteResult.Failure(
                             "Réponse de traduction vide. Vérifiez la compatibilité du serveur.",

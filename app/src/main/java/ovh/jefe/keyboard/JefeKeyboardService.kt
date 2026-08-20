@@ -58,7 +58,10 @@ open class JefeKeyboardService : InputMethodService() {
     private var sessionJob = SupervisorJob(serviceJob)
     private var sessionScope = CoroutineScope(sessionJob + Dispatchers.Main.immediate)
 
+    private var rootView: KeyboardRootView? = null
     private var keyboardView: KeyboardView? = null
+    private var railInputs = TopRailInputs()
+    private var editorPrivacy = EditorPrivacyPolicy.evaluate(null)
     private var pendingEnterAction = EditorInfo.IME_ACTION_UNSPECIFIED
     private var sessionGeneration = 0L
     private var suggestionSnapshot: SuggestionSnapshot? = null
@@ -92,25 +95,29 @@ open class JefeKeyboardService : InputMethodService() {
         val absoluteSelectionEnd: Int,
     )
 
-    override fun onCreateInputView(): View {
-        return KeyboardView(this).also { view ->
-            keyboardView = view
-            setupKeyboardCallbacks(view)
-            view.enterAction = pendingEnterAction
-            view.suggestions = emptyList()
-            view.isRecording = recordingMode
-        }
+    override fun onCreateInputView(): View = KeyboardRootView(this).also { root ->
+        rootView = root
+        keyboardView = root.keyboardView
+        setupKeyboardCallbacks(root.keyboardView)
+        setupRailCallbacks(root.railView)
+        root.keyboardView.enterAction = pendingEnterAction
+        root.keyboardView.isRecording = recordingMode
+        root.keyboardView.remoteActionsEnabled =
+            editorPrivacy.allowTranslation || editorPrivacy.allowDictation
+        setSuggestions(emptyList())
     }
 
     override fun onStartInput(info: EditorInfo?, restarting: Boolean) {
         super.onStartInput(info, restarting)
         stopRecording(launchTranscription = false)
         resetSession()
+        editorPrivacy = EditorPrivacyPolicy.evaluate(info)
         pendingEnterAction = resolveEnterAction(info?.imeOptions)
         keyboardView?.let { view ->
             view.enterAction = pendingEnterAction
-            view.suggestions = emptyList()
             view.isRecording = false
+            view.remoteActionsEnabled =
+                editorPrivacy.allowTranslation || editorPrivacy.allowDictation
         }
     }
 
@@ -146,7 +153,31 @@ open class JefeKeyboardService : InputMethodService() {
         view.onKeySpace = { handleSpace() }
         view.onMicClick = { toggleRecording() }
         view.onTranslateClick = { translateSelection() }
-        view.onSuggestionClick = { word -> acceptSuggestion(word) }
+    }
+
+    private fun setupRailCallbacks(rail: KeyboardRailView) {
+        rail.onSuggestionClick = { word -> acceptSuggestion(word) }
+        rail.onClipboardTabClick = { onClipboardRequested() }
+        rail.onTranslationRetryClick = { retryTranslation() }
+        rail.onClipboardPromptClick = { id -> onClipboardPromptRequested(id) }
+        rail.onClipboardPromptDismiss = { dismissClipboardPrompt() }
+    }
+
+    private fun onClipboardRequested() = Unit
+
+    private fun onClipboardPromptRequested(@Suppress("UNUSED_PARAMETER") entryId: String) = Unit
+
+    private fun dismissClipboardPrompt() = Unit
+
+    private fun retryTranslation() = Unit
+
+    private fun renderRail() {
+        rootView?.renderRail(TopRailResolver.resolve(railInputs))
+    }
+
+    private fun setSuggestions(values: List<String>) {
+        railInputs = railInputs.copy(suggestions = values)
+        renderRail()
     }
 
     private fun handleChar(char: String) {
@@ -218,11 +249,10 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun updateSuggestions() {
-        val view = keyboardView
         val connection = currentInputConnection
-        if (view == null || connection == null || !connection.getSelectedText(0).isNullOrEmpty()) {
+        if (rootView == null || connection == null || !connection.getSelectedText(0).isNullOrEmpty()) {
             suggestionSnapshot = null
-            view?.suggestions = emptyList()
+            setSuggestions(emptyList())
             return
         }
 
@@ -243,7 +273,7 @@ open class JefeKeyboardService : InputMethodService() {
                 suggestions,
             )
         }
-        view.suggestions = if (suggestionSnapshot == null) emptyList() else suggestions
+        setSuggestions(if (suggestionSnapshot == null) emptyList() else suggestions)
     }
 
     private fun toggleRecording() {
@@ -542,7 +572,7 @@ open class JefeKeyboardService : InputMethodService() {
         sessionJob = SupervisorJob(serviceJob)
         sessionScope = CoroutineScope(sessionJob + Dispatchers.Main.immediate)
         suggestionSnapshot = null
-        keyboardView?.suggestions = emptyList()
+        setSuggestions(emptyList())
     }
 
     private fun releaseRecorder(activeRecorder: AudioRecorder) {
@@ -593,6 +623,7 @@ open class JefeKeyboardService : InputMethodService() {
         serviceScope.cancel()
         deletePendingAudioFiles()
         suggestionSnapshot = null
+        rootView = null
         keyboardView = null
         super.onDestroy()
     }

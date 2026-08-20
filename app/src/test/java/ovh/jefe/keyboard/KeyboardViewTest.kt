@@ -6,7 +6,6 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.os.Looper
-import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -16,7 +15,6 @@ import java.io.FileOutputStream
 import java.time.Duration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -147,36 +145,27 @@ class KeyboardViewTest {
     }
 
     @Test
-    fun `successful key and suggestion taps reach accessibility and haptic hooks`() {
+    fun `successful key taps reach accessibility and haptic hooks`() {
         val committed = mutableListOf<String>()
-        val chosen = mutableListOf<String>()
         view.onKeyChar = committed::add
-        view.onSuggestionClick = chosen::add
-        view.suggestions = listOf("bonjour", "bonsoir", "bonne")
         val q = view.renderedKeys().single {
             it.action == KeyboardView.KeyAction.CHAR && it.label == "q"
         }
-        val suggestion = view.renderedSuggestions().first()
 
         tap(q.centerX, q.centerY)
-        tap(suggestion.centerX, suggestion.centerY)
 
         assertEquals(listOf("q"), committed)
-        assertEquals(listOf("bonjour"), chosen)
-        assertEquals(2, view.clickCount)
-        assertEquals(2, view.hapticCount)
-        assertEquals(HapticFeedbackConstants.KEYBOARD_TAP, view.lastHapticFeedback)
+        assertEquals(1, view.clickCount)
+        assertEquals(1, view.hapticCount)
         assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_YES, view.importantForAccessibility)
         assertTrue(view.contentDescription.isNotBlank())
     }
 
     @Test
-    fun `all rendered keys and suggestions meet minimum touch height`() {
+    fun `all rendered keys meet minimum touch height`() {
         val minimum = 44f * view.resources.displayMetrics.density
 
         assertTrue(view.renderedKeys().all { it.height >= minimum })
-        assertEquals(3, view.renderedSuggestions().size)
-        assertTrue(view.renderedSuggestions().all { it.height >= minimum })
     }
 
     @Test
@@ -192,15 +181,19 @@ class KeyboardViewTest {
     }
 
     @Test
-    fun `pressed suggestion capsule has visible feedback`() {
-        view.suggestions = listOf("bonjour", "bonsoir", "bonne")
-        val suggestion = view.renderedSuggestions().first()
+    fun `remote action flag invalidates without removing mic or translation keys`() {
+        val invalidationsBefore = view.invalidateCount
 
-        view.onTouchEvent(down(suggestion.centerX, suggestion.centerY))
-        val pressed = view.renderedSuggestions().first()
+        view.remoteActionsEnabled = false
 
-        assertNotEquals(suggestion.backgroundColor, pressed.backgroundColor)
-        view.onTouchEvent(cancel(suggestion.centerX, suggestion.centerY))
+        assertFalse(view.remoteActionsEnabled)
+        assertTrue(view.invalidateCount > invalidationsBefore)
+        assertEquals(
+            setOf(KeyboardView.KeyAction.MIC, KeyboardView.KeyAction.TRANSLATE),
+            view.renderedKeys().map { it.action }.filter {
+                it == KeyboardView.KeyAction.MIC || it == KeyboardView.KeyAction.TRANSLATE
+            }.toSet(),
+        )
     }
 
     @Test
@@ -232,7 +225,6 @@ class KeyboardViewTest {
         val output = System.getenv("VISUAL_OUTPUT_DIR")?.let(::File)
         output?.mkdirs()
 
-        view.suggestions = listOf("bonjour", "bonsoir", "bonne")
         view.enterAction = EditorInfo.IME_ACTION_SEND
         render(view, output?.resolve("keyboard-light.png"))
 
@@ -244,7 +236,6 @@ class KeyboardViewTest {
                 Configuration.UI_MODE_NIGHT_YES
         }
         val darkView = TrackingKeyboardView(view.context.createConfigurationContext(darkConfiguration)).apply {
-            suggestions = listOf("bonjour", "bonsoir", "bonne")
             enterAction = EditorInfo.IME_ACTION_SEND
         }
         render(darkView, output?.resolve("keyboard-dark.png"))
@@ -295,6 +286,12 @@ class KeyboardViewTest {
         var clickCount = 0
         var hapticCount = 0
         var lastHapticFeedback = -1
+        var invalidateCount = 0
+
+        override fun invalidate() {
+            invalidateCount += 1
+            super.invalidate()
+        }
 
         override fun performClick(): Boolean {
             clickCount += 1

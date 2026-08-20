@@ -48,6 +48,15 @@
     <string name="keyboard_enter_send">Envoyer</string>
     <string name="keyboard_enter_done">OK</string>
     <string name="keyboard_recording">Écoute…</string>
+    <string name="clipboard_open">Presse-papiers</string>
+    <string name="clipboard_close_prompt">Masquer la proposition de collage</string>
+    <string name="clipboard_paste_action">Coller</string>
+    <string name="clipboard_sensitive_preview">Contenu sensible ••••••</string>
+    <string name="clipboard_sensitive_paste_description">Coller le contenu sensible</string>
+    <string name="suggestion_insert">Insérer %1$s</string>
+    <string name="rail_translation_loading">Traduction en cours…</string>
+    <string name="rail_translation_success">Traduit ✓</string>
+    <string name="rail_translation_error">Traduction impossible · Réessayer</string>
     <string name="api_key_configured">Configurée</string>
     <string name="api_key_not_configured">Non configurée</string>
 </resources>

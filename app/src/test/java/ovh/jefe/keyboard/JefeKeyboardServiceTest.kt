@@ -44,18 +44,18 @@ class JefeKeyboardServiceTest {
         val info = editorInfo(EditorInfo.IME_ACTION_PREVIOUS)
 
         service.onStartInput(info, false)
-        val view = service.onCreateInputView() as KeyboardView
+        val root = service.onCreateInputView() as KeyboardRootView
         service.onStartInputView(info, false)
 
-        assertEquals(EditorInfo.IME_ACTION_PREVIOUS, view.enterAction)
+        assertEquals(EditorInfo.IME_ACTION_PREVIOUS, root.keyboardView.enterAction)
     }
 
     @Test
     fun `backspace removes the selection and leaves surrounding text`() {
         val connection = EditableInputConnection(context(), "avant milieu après", 6, 12)
-        val (service, view) = startService(connection)
+        val (service, root) = startRootService(connection)
 
-        view.onKeyDelete?.invoke()
+        root.keyboardView.onKeyDelete?.invoke()
 
         assertEquals("avant  après", connection.text())
         service.onDestroy()
@@ -64,9 +64,9 @@ class JefeKeyboardServiceTest {
     @Test
     fun `backspace removes one Unicode code point`() {
         val connection = EditableInputConnection(context(), "A😀", 3)
-        val (service, view) = startService(connection)
+        val (service, root) = startRootService(connection)
 
-        view.onKeyDelete?.invoke()
+        root.keyboardView.onKeyDelete?.invoke()
 
         assertEquals("A", connection.text())
         service.onDestroy()
@@ -75,10 +75,10 @@ class JefeKeyboardServiceTest {
     @Test
     fun `candidate replaces the actual live token`() {
         val connection = EditableInputConnection(context(), "bo", 2)
-        val (service, view) = startService(connection)
-        assertTrue(view.suggestions.contains("bon"))
+        val (service, root) = startRootService(connection)
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
 
-        view.onSuggestionClick?.invoke("bon")
+        root.railView.suggestionViews().first { it.text == "bon" }.performClick()
 
         assertEquals("bon ", connection.text())
         service.onDestroy()
@@ -87,10 +87,10 @@ class JefeKeyboardServiceTest {
     @Test
     fun `candidate commit failure leaves the original token intact with one atomic replacement`() {
         val connection = RejectingCommitInputConnection(context(), "bo", 2)
-        val (service, view) = startService(connection)
-        assertTrue(view.suggestions.contains("bon"))
+        val (service, root) = startRootService(connection)
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
 
-        view.onSuggestionClick?.invoke("bon")
+        root.railView.suggestionViews().first { it.text == "bon" }.performClick()
 
         assertEquals("bo", connection.text())
         assertEquals(listOf("bon "), connection.commitAttempts)
@@ -101,10 +101,10 @@ class JefeKeyboardServiceTest {
     @Test
     fun `candidate does not commit when editor rejects selecting the live token`() {
         val connection = RejectingSelectionInputConnection(context(), "bo", 2)
-        val (service, view) = startService(connection)
-        assertTrue(view.suggestions.contains("bon"))
+        val (service, root) = startRootService(connection)
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
 
-        view.onSuggestionClick?.invoke("bon")
+        root.railView.suggestionViews().first { it.text == "bon" }.performClick()
 
         assertEquals("bo", connection.text())
         assertTrue(connection.commitAttempts.isEmpty())
@@ -120,9 +120,9 @@ class JefeKeyboardServiceTest {
                 2,
                 extractedTextMode = mode,
             )
-            val (service, view) = startService(connection)
+            val (service, root) = startRootService(connection)
 
-            view.onSuggestionClick?.invoke("bon")
+            root.railView.onSuggestionClick?.invoke("bon")
 
             assertEquals("bo", connection.text())
             service.onDestroy()
@@ -132,12 +132,12 @@ class JefeKeyboardServiceTest {
     @Test
     fun `candidate never replaces unrelated text after a cursor move`() {
         val connection = EditableInputConnection(context(), "bo ici", 2)
-        val (service, view) = startService(connection)
-        assertTrue(view.suggestions.contains("bon"))
+        val (service, root) = startRootService(connection)
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
         connection.select(6)
         service.onUpdateSelection(2, 2, 6, 6, -1, -1)
 
-        view.onSuggestionClick?.invoke("bon")
+        root.railView.onSuggestionClick?.invoke("bon")
 
         assertEquals("bo ici", connection.text())
         service.onDestroy()
@@ -146,26 +146,26 @@ class JefeKeyboardServiceTest {
     @Test
     fun `candidate from a prior session never edits the new connection`() {
         val first = EditableInputConnection(context(), "bo", 2)
-        val (service, view) = startService(first)
-        assertTrue(view.suggestions.contains("bon"))
+        val (service, root) = startRootService(first)
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
         val second = EditableInputConnection(context(), "secret", 6)
         service.testConnection = second
 
         service.onStartInput(editorInfo(), false)
-        view.onSuggestionClick?.invoke("bon")
+        root.railView.onSuggestionClick?.invoke("bon")
 
         assertEquals("bo", first.text())
         assertEquals("secret", second.text())
-        assertTrue(view.suggestions.isEmpty())
+        assertTrue(root.railView.suggestionViews().isEmpty())
         service.onDestroy()
     }
 
     @Test
     fun `previous enter action is sent to the editor without a newline`() {
         val connection = EditableInputConnection(context(), "texte", 5)
-        val (service, view) = startService(connection, EditorInfo.IME_ACTION_PREVIOUS)
+        val (service, root) = startRootService(connection, EditorInfo.IME_ACTION_PREVIOUS)
 
-        view.onKeyEnter?.invoke()
+        root.keyboardView.onKeyEnter?.invoke()
 
         assertEquals(listOf(EditorInfo.IME_ACTION_PREVIOUS), connection.editorActions)
         assertEquals("texte", connection.text())
@@ -176,7 +176,8 @@ class JefeKeyboardServiceTest {
     fun `no enter action flag renders and commits the default newline action`() {
         val connection = EditableInputConnection(context(), "texte", 5)
         val actionWithFlag = EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_ENTER_ACTION
-        val (service, view) = startService(connection, actionWithFlag)
+        val (service, root) = startRootService(connection, actionWithFlag)
+        val view = root.keyboardView
 
         view.measure(
             View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
@@ -195,16 +196,19 @@ class JefeKeyboardServiceTest {
     @Test
     fun `external selection changes clear and refresh suggestions from live text`() {
         val connection = EditableInputConnection(context(), "je ", 3)
-        val (service, view) = startService(connection)
-        assertEquals(listOf("suis", "vais", "veux"), view.suggestions)
+        val (service, root) = startRootService(connection)
+        assertEquals(
+            listOf("suis", "vais", "veux"),
+            root.railView.suggestionViews().map { it.text.toString() },
+        )
 
         connection.select(0, 2)
         service.onUpdateSelection(3, 3, 0, 2, -1, -1)
-        assertTrue(view.suggestions.isEmpty())
+        assertTrue(root.railView.suggestionViews().isEmpty())
 
         connection.replaceAll("bo", 2)
         service.onUpdateSelection(0, 2, 2, 2, -1, -1)
-        assertTrue(view.suggestions.contains("bon"))
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
         service.onDestroy()
     }
 
@@ -213,9 +217,9 @@ class JefeKeyboardServiceTest {
         val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
         val service = testService(connection)
         service.translation = { RemoteResult.Success("hello") }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
 
-        view.onTranslateClick?.invoke()
+        root.keyboardView.onTranslateClick?.invoke()
         idleMainLooperUntil { connection.text() == "hello monde" }
 
         assertEquals("hello monde", connection.text())
@@ -227,9 +231,9 @@ class JefeKeyboardServiceTest {
         val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
         val service = testService(connection)
         service.translation = { RemoteResult.Success(" traduction ") }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
 
-        view.onTranslateClick?.invoke()
+        root.keyboardView.onTranslateClick?.invoke()
         idleMainLooperUntil { connection.text() != "bonjour monde" }
 
         assertEquals(" traduction  monde", connection.text())
@@ -241,9 +245,9 @@ class JefeKeyboardServiceTest {
         val connection = EditableInputConnection(context(), "bonjour monde", 0, 7)
         val service = testService(connection)
         service.translation = { RemoteResult.Success("  \n\t  ") }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
 
-        view.onTranslateClick?.invoke()
+        root.keyboardView.onTranslateClick?.invoke()
         drainMainLooper()
 
         assertEquals("bonjour monde", connection.text())
@@ -258,9 +262,9 @@ class JefeKeyboardServiceTest {
         val connection = RejectingCommitInputConnection(context(), "bonjour monde", 0, 7)
         val service = testService(connection)
         service.translation = { RemoteResult.Success("hello") }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
 
-        view.onTranslateClick?.invoke()
+        root.keyboardView.onTranslateClick?.invoke()
         idleMainLooperUntil { connection.commitAttempts.isNotEmpty() }
 
         assertEquals(listOf("hello"), connection.commitAttempts)
@@ -277,9 +281,9 @@ class JefeKeyboardServiceTest {
         val delayed = DelayedRemoteResult("hello")
         val service = testService(connection)
         service.translation = delayed::complete
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
 
-        view.onTranslateClick?.invoke()
+        root.keyboardView.onTranslateClick?.invoke()
         assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
         connection.select(8, 13)
         service.onUpdateSelection(0, 7, 8, 13, -1, -1)
@@ -305,9 +309,9 @@ class JefeKeyboardServiceTest {
         val delayed = DelayedRemoteResult("translated")
         val service = testService(connection)
         service.translation = delayed::complete
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
 
-        view.onTranslateClick?.invoke()
+        root.keyboardView.onTranslateClick?.invoke()
         assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
         connection.select(5, 9)
         service.onUpdateSelection(0, 4, 5, 9, -1, -1)
@@ -335,9 +339,9 @@ class JefeKeyboardServiceTest {
                 translationCalls.incrementAndGet()
                 RemoteResult.Success("hello")
             }
-            val view = createViewAndStart(service)
+            val root = createRootAndStart(service)
 
-            view.onTranslateClick?.invoke()
+            root.keyboardView.onTranslateClick?.invoke()
             drainMainLooper()
 
             assertEquals("bonjour", connection.text())
@@ -353,9 +357,9 @@ class JefeKeyboardServiceTest {
         val delayed = DelayedRemoteResult("hello")
         val service = testService(first)
         service.translation = delayed::complete
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
 
-        view.onTranslateClick?.invoke()
+        root.keyboardView.onTranslateClick?.invoke()
         assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
         service.testConnection = second
         service.onStartInput(editorInfo(), false)
@@ -377,11 +381,11 @@ class JefeKeyboardServiceTest {
         val service = testService(first)
         service.recorderFactory = { recorder }
         service.transcription = delayed::completeFile
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
         grantMicrophonePermission()
 
-        view.onMicClick?.invoke()
-        view.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
         assertTrue(delayed.started.await(5, TimeUnit.SECONDS))
         service.testConnection = second
         service.onStartInput(editorInfo(), false)
@@ -403,11 +407,11 @@ class JefeKeyboardServiceTest {
         val service = testService(connection)
         service.recorderFactory = { recorder }
         service.transcription = { RemoteResult.Success("dictée") }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
         grantMicrophonePermission()
 
-        view.onMicClick?.invoke()
-        view.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
         idleMainLooperUntil { connection.commitAttempts.isNotEmpty() }
 
         assertEquals(listOf("dictée"), connection.commitAttempts)
@@ -423,10 +427,10 @@ class JefeKeyboardServiceTest {
         val recorder = FakeAudioRecorder(failStart = true)
         val service = testService(connection)
         service.recorderFactory = { recorder }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
         grantMicrophonePermission()
 
-        view.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
 
         assertEquals(1, recorder.releaseCount)
         assertNotNull(recorder.outputFile)
@@ -439,7 +443,7 @@ class JefeKeyboardServiceTest {
         val connection = EditableInputConnection(context(), "", 0)
         val service = testService(connection)
         service.recorderFactory = { error("factory failed") }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
         grantMicrophonePermission()
         val existingAudio = service.cacheDir.listFiles()
             .orEmpty()
@@ -447,14 +451,14 @@ class JefeKeyboardServiceTest {
             .map(File::getName)
             .toSet()
 
-        view.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
 
         val remainingAudio = service.cacheDir.listFiles()
             .orEmpty()
             .filter { it.name.startsWith("dictation_") }
             .map(File::getName)
             .toSet()
-        assertFalse(view.isRecording)
+        assertFalse(root.keyboardView.isRecording)
         assertEquals(existingAudio, remainingAudio)
         assertTrue(ShadowToast.getTextOfLatestToast().contains("Erreur micro"))
         service.onDestroy()
@@ -471,11 +475,11 @@ class JefeKeyboardServiceTest {
             transcriptionCalls.incrementAndGet()
             RemoteResult.Success("unexpected")
         }
-        val view = createViewAndStart(service)
+        val root = createRootAndStart(service)
         grantMicrophonePermission()
 
-        view.onMicClick?.invoke()
-        view.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
+        root.keyboardView.onMicClick?.invoke()
 
         assertEquals(1, recorder.releaseCount)
         assertFalse(recorder.outputFile!!.exists())
@@ -499,9 +503,9 @@ class JefeKeyboardServiceTest {
                 transcriptionCalls.incrementAndGet()
                 RemoteResult.Success("unexpected")
             }
-            val view = createViewAndStart(service)
+            val root = createRootAndStart(service)
             grantMicrophonePermission()
-            view.onMicClick?.invoke()
+            root.keyboardView.onMicClick?.invoke()
 
             finish(service)
 
@@ -511,12 +515,12 @@ class JefeKeyboardServiceTest {
         }
     }
 
-    private fun startService(
+    private fun startRootService(
         connection: EditableInputConnection,
         action: Int = EditorInfo.IME_ACTION_UNSPECIFIED,
-    ): Pair<TestJefeKeyboardService, KeyboardView> {
+    ): Pair<TestJefeKeyboardService, KeyboardRootView> {
         val service = testService(connection, action)
-        return service to createViewAndStart(service, action)
+        return service to createRootAndStart(service, action)
     }
 
     private fun testService(
@@ -529,20 +533,24 @@ class JefeKeyboardServiceTest {
         }
     }
 
-    private fun createViewAndStart(
+    private fun createRootAndStart(
         service: TestJefeKeyboardService,
         action: Int = service.testEditorInfo?.imeOptions ?: EditorInfo.IME_ACTION_UNSPECIFIED,
-    ): KeyboardView {
-        val info = editorInfo(action)
+        info: EditorInfo = editorInfo(action),
+    ): KeyboardRootView {
         service.testEditorInfo = info
         service.onStartInput(info, false)
-        val view = service.onCreateInputView() as KeyboardView
+        val root = service.onCreateInputView() as KeyboardRootView
         service.onStartInputView(info, false)
-        return view
+        return root
     }
 
-    private fun editorInfo(action: Int = EditorInfo.IME_ACTION_UNSPECIFIED): EditorInfo {
-        return EditorInfo().apply { imeOptions = action }
+    private fun editorInfo(
+        action: Int = EditorInfo.IME_ACTION_UNSPECIFIED,
+        inputType: Int = android.text.InputType.TYPE_CLASS_TEXT,
+    ): EditorInfo = EditorInfo().apply {
+        imeOptions = action
+        this.inputType = inputType
     }
 
     private fun grantMicrophonePermission() {

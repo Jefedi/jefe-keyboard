@@ -27,11 +27,10 @@ open class KeyboardView @JvmOverloads constructor(
     var onKeySpace: (() -> Unit)? = null
     var onMicClick: (() -> Unit)? = null
     var onTranslateClick: (() -> Unit)? = null
-    var onSuggestionClick: ((String) -> Unit)? = null
 
-    var suggestions: List<String> = emptyList()
+    var remoteActionsEnabled = true
         set(value) {
-            field = value.take(SUGGESTION_COUNT)
+            field = value
             invalidate()
         }
 
@@ -69,7 +68,6 @@ open class KeyboardView @JvmOverloads constructor(
         SPACE,
         MIC,
         TRANSLATE,
-        SUGGESTION,
         SYMBOLS_TOGGLE,
     }
 
@@ -172,13 +170,10 @@ open class KeyboardView @JvmOverloads constructor(
 
     private val displayMetrics = resources.displayMetrics
     private val keyHeight = dp(48)
-    private val suggestionHeight = dp(48)
     private val gap = dp(6)
     private val keyCorner = dp(10)
-    private val capsuleCorner = dp(20)
     private val keyTextSize = sp(18)
     private val specialTextSize = sp(12)
-    private val suggestionTextSize = sp(15)
     private val utilityGlyphTextSize = sp(22)
     private val keyTypeface = Typeface.create("sans-serif-condensed", Typeface.NORMAL)
     private val actionTypeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
@@ -193,11 +188,6 @@ open class KeyboardView @JvmOverloads constructor(
     private val specialPaint = paint(R.color.key_bg_special)
     private val pressedPaint = paint(R.color.key_pressed)
     private val outlinePaint = paint(R.color.key_outline, Paint.Style.STROKE).apply { strokeWidth = dp(1) }
-    private val suggestionPaint = paint(R.color.suggestion_bg)
-    private val suggestionPressedPaint = paint(R.color.suggestion_pressed)
-    private val suggestionOutlinePaint = paint(R.color.suggestion_outline, Paint.Style.STROKE).apply {
-        strokeWidth = dp(1)
-    }
     private val actionPaint = paint(R.color.signal_blue)
     private val actionPressedPaint = paint(R.color.action_pressed)
     private val microphonePaint = paint(R.color.private_teal)
@@ -228,11 +218,6 @@ open class KeyboardView @JvmOverloads constructor(
         textAlign = Paint.Align.CENTER
         typeface = actionTypeface
     }
-    private val suggestionTextPaint = paint(R.color.suggestion_text).apply {
-        textSize = suggestionTextSize
-        textAlign = Paint.Align.CENTER
-        typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-    }
     private val iconDefaultColor = ContextCompat.getColor(context, R.color.key_text)
     private val iconMicColor = ContextCompat.getColor(context, R.color.mic_icon)
     private val iconMicPressedColor = ContextCompat.getColor(context, R.color.mic_pressed_icon)
@@ -243,7 +228,6 @@ open class KeyboardView @JvmOverloads constructor(
     private data class ComputedKey(val rect: RectF, val def: KeyDef, val row: Int, val col: Int)
 
     private var computedKeys: List<ComputedKey> = emptyList()
-    private var computedSuggestions: List<ComputedKey> = emptyList()
     private var pressedKey: ComputedKey? = null
     private var longPressRunnable: Runnable? = null
     private var longPressTriggered = false
@@ -260,7 +244,7 @@ open class KeyboardView @JvmOverloads constructor(
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
-        val desiredHeight = suggestionHeight + gap + buildRows().size * (keyHeight + gap) + gap
+        val desiredHeight = gap + buildRows().size * (keyHeight + gap) + gap
         setMeasuredDimension(width, resolveSize(desiredHeight.toInt(), heightMeasureSpec))
     }
 
@@ -279,21 +263,10 @@ open class KeyboardView @JvmOverloads constructor(
         val availableWidth = width.toFloat().coerceAtLeast(0f)
         val rows = buildRows()
         val keys = mutableListOf<ComputedKey>()
-        val suggestionKeys = mutableListOf<ComputedKey>()
-        val suggestionWidth = (availableWidth - gap * (SUGGESTION_COUNT + 1)) / SUGGESTION_COUNT
-        repeat(SUGGESTION_COUNT) { index ->
-            val left = gap + index * (suggestionWidth + gap)
-            suggestionKeys += ComputedKey(
-                RectF(left, gap / 2f, left + suggestionWidth, gap / 2f + suggestionHeight),
-                KeyDef(KeyAction.SUGGESTION),
-                -1,
-                index,
-            )
-        }
         rows.forEachIndexed { rowIndex, row ->
             val totalWeight = row.sumOf { it.weight.toDouble() }.toFloat()
             val unitWidth = (availableWidth - gap * (row.size + 1)) / totalWeight
-            val y = suggestionHeight + gap + rowIndex * (keyHeight + gap)
+            val y = gap + rowIndex * (keyHeight + gap)
             var x = gap
             row.forEachIndexed { columnIndex, key ->
                 val width = unitWidth * key.weight
@@ -302,25 +275,12 @@ open class KeyboardView @JvmOverloads constructor(
             }
         }
         computedKeys = keys
-        computedSuggestions = suggestionKeys
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (computedKeys.isEmpty()) computeLayout()
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), surfacePaint)
-        computedSuggestions.forEachIndexed { index, key ->
-            val background = if (key == pressedKey && !gestureCancelled) {
-                suggestionPressedPaint
-            } else {
-                suggestionPaint
-            }
-            canvas.drawRoundRect(key.rect, capsuleCorner, capsuleCorner, background)
-            canvas.drawRoundRect(key.rect, capsuleCorner, capsuleCorner, suggestionOutlinePaint)
-            suggestions.getOrNull(index)?.let { suggestion ->
-                canvas.drawText(suggestion, key.rect.centerX(), textBaseline(key.rect, suggestionTextPaint), suggestionTextPaint)
-            }
-        }
         computedKeys.forEach { drawKey(canvas, it, it == pressedKey && !gestureCancelled) }
         drawAccentPopup(canvas)
     }
@@ -363,7 +323,6 @@ open class KeyboardView @JvmOverloads constructor(
         definition.iconType == IconType.MIC && pressed -> iconMicPressedColor
         definition.iconType == IconType.MIC -> iconMicColor
         definition.iconType != null -> iconDefaultColor
-        definition.action == KeyAction.SUGGESTION -> suggestionTextPaint.color
         else -> textPaintFor(definition).color
     }
 
@@ -510,10 +469,6 @@ open class KeyboardView @JvmOverloads constructor(
             symbolMode = !symbolMode
             true
         }
-        KeyAction.SUGGESTION -> suggestions.getOrNull(key.col)?.let { suggestion ->
-            onSuggestionClick?.invoke(suggestion)
-            true
-        } ?: false
     }
 
     private fun (() -> Unit)?.invokeIfPresent(): Boolean {
@@ -537,9 +492,6 @@ open class KeyboardView @JvmOverloads constructor(
     }
 
     private fun hitTest(x: Float, y: Float): ComputedKey? {
-        computedSuggestions.firstOrNull { it.rect.contains(x, y) }?.let { suggestion ->
-            return if (suggestion.col in suggestions.indices) suggestion else null
-        }
         return computedKeys.firstOrNull { it.rect.contains(x, y) }
     }
 
@@ -553,13 +505,6 @@ open class KeyboardView @JvmOverloads constructor(
     internal fun renderedKeys(): List<RenderedControl> {
         if (computedKeys.isEmpty() && width > 0) computeLayout()
         return computedKeys.map { it.toRenderedControl(displayLabel(it.def)) }
-    }
-
-    internal fun renderedSuggestions(): List<RenderedControl> {
-        if (computedSuggestions.isEmpty() && width > 0) computeLayout()
-        return computedSuggestions.mapIndexed { index, key ->
-            key.toRenderedControl(suggestions.getOrNull(index).orEmpty())
-        }
     }
 
     internal fun renderedAccentOptions(): List<RenderedAccent> {
@@ -587,14 +532,9 @@ open class KeyboardView @JvmOverloads constructor(
             hasIcon = def.iconType != null,
             textSizePx = when {
                 def.iconType != null || label.isEmpty() -> 0f
-                def.action == KeyAction.SUGGESTION -> suggestionTextPaint.textSize
                 else -> textPaintFor(def).textSize
             },
-            backgroundColor = if (def.action == KeyAction.SUGGESTION) {
-                if (pressed) suggestionPressedPaint.color else suggestionPaint.color
-            } else {
-                backgroundPaintFor(def, pressed).color
-            },
+            backgroundColor = backgroundPaintFor(def, pressed).color,
             foregroundColor = foregroundColorFor(def, pressed),
         )
     }
@@ -620,7 +560,4 @@ open class KeyboardView @JvmOverloads constructor(
     private fun sp(value: Int): Float =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value.toFloat(), displayMetrics)
 
-    private companion object {
-        const val SUGGESTION_COUNT = 3
-    }
 }

@@ -23,6 +23,16 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
+import ovh.jefe.keyboard.clipboard.ClipboardActivation
+import ovh.jefe.keyboard.clipboard.ClipboardEntryId
+import ovh.jefe.keyboard.clipboard.ClipboardPanelController
+import ovh.jefe.keyboard.clipboard.ClipboardPasteCoordinator
+import ovh.jefe.keyboard.clipboard.ClipboardPasteResult
+import ovh.jefe.keyboard.clipboard.ClipboardPromptController
+import ovh.jefe.keyboard.clipboard.ClipboardRuntime
+import ovh.jefe.keyboard.clipboard.ClipboardComponent
+import ovh.jefe.keyboard.clipboard.EditorTarget
 
 internal interface AudioRecorder {
     fun prepareAndStart(outputFile: File)
@@ -76,6 +86,12 @@ open class JefeKeyboardService : InputMethodService() {
     private var expectedTranslationSelectionUpdate: ExpectedTranslationSelectionUpdate? = null
     private var activeExpectedSelectionAction: ExpectedSelectionAction? = null
     private var translationAttemptId = 0L
+    private val clipboardSecurity = ClipboardSessionSecurity()
+    private var clipboardRuntimeInstance: ClipboardRuntime? = null
+    private var clipboardPromptController: ClipboardPromptController? = null
+    private var clipboardPanelController: ClipboardPanelController? = null
+    private var clipboardPromptCollection: Job? = null
+    private var clipboardPanelCollection: Job? = null
 
     private var recordingMode = false
     private var recorder: AudioRecorder? = null
@@ -143,6 +159,27 @@ open class JefeKeyboardService : InputMethodService() {
         val absoluteSelectionEnd: Int,
     )
 
+    override fun onCreate() {
+        super.onCreate()
+        val runtime = createClipboardRuntime() ?: return
+        clipboardRuntimeInstance = runtime
+        clipboardPromptController = ClipboardPromptController(runtime.repository, serviceScope).also { prompts ->
+            clipboardPromptCollection = serviceScope.launch {
+                prompts.prompt.collectLatest { prompt ->
+                    railInputs = railInputs.copy(clipboardPrompt = prompt)
+                    renderRail()
+                }
+            }
+        }
+        clipboardPanelController = ClipboardPanelController(runtime.repository, runtime.controller, serviceScope).also { panel ->
+            clipboardPanelCollection = serviceScope.launch {
+                panel.state.collectLatest { state -> rootView?.clipboardPanelView?.render(state) }
+            }
+        }
+    }
+
+    internal open fun createClipboardRuntime(): ClipboardRuntime? = ClipboardComponent.get(this)
+
     override fun onCreateInputView(): View {
         retireRoot(rootView)
         return KeyboardRootView(this).also { root ->
@@ -154,8 +191,10 @@ open class JefeKeyboardService : InputMethodService() {
             root.keyboardView.isRecording = recordingMode
             root.keyboardView.isTranslating = railInputs.translation == TranslationFeedback.Loading
             root.keyboardView.remoteActionsEnabled =
-                editorPrivacy.allowTranslation || editorPrivacy.allowDictation
+                (editorPrivacy.allowTranslation || editorPrivacy.allowDictation) &&
+                    clipboardSecurity.allowRemoteActions
             invalidateSuggestions()
+            setupClipboardPanelCallbacks(root)
         }
     }
 
@@ -165,12 +204,15 @@ open class JefeKeyboardService : InputMethodService() {
         resetSession()
         pendingEnterAction = resolveEnterAction(info?.imeOptions)
         editorPrivacy = EditorPrivacyPolicy.evaluate(info)
+        clipboardSecurity.startSession()
+        clipboardRuntimeInstance?.controller?.onEditorPrivacyChanged(editorPrivacy.forceSensitiveClipboard)
+        clipboardRuntimeInstance?.editorSessions?.update(sessionGeneration)
         suggestionGate.startSession()
         keyboardView?.let { view ->
             view.enterAction = pendingEnterAction
             view.isRecording = false
             view.remoteActionsEnabled =
-                editorPrivacy.allowTranslation || editorPrivacy.allowDictation
+                (editorPrivacy.allowTranslation || editorPrivacy.allowDictation) && clipboardSecurity.allowRemoteActions
         }
         invalidateSuggestions()
     }
@@ -278,17 +320,94 @@ open class JefeKeyboardService : InputMethodService() {
         root.railView.onTranslationRetryClick = null
         root.railView.onClipboardPromptClick = null
         root.railView.onClipboardPromptDismiss = null
+        root.clipboardPanelView.onBack = null
+        root.clipboardPanelView.onEnable = null
+        root.clipboardPanelView.onClear = null
+        root.clipboardPanelView.onPaste = null
+        root.clipboardPanelView.onPin = null
+        root.clipboardPanelView.onDelete = null
         if (rootView === root) {
             rootView = null
             keyboardView = null
         }
     }
 
-    private fun onClipboardRequested() = Unit
+    private fun setupClipboardPanelCallbacks(root: KeyboardRootView) {
+        val panel = clipboardPanelController ?: return
+        root.clipboardPanelView.onBack = {
+            if (rootView === root) {
+                root.showKeyboard()
+                updateClipboardPromptVisibility()
+            }
+        }
+        root.clipboardPanelView.onEnable = panel::enable
+        root.clipboardPanelView.onClear = panel::clear
+        root.clipboardPanelView.onPaste = { id ->
+            if (rootView === root) pasteClipboardEntry(root, id)
+        }
+        root.clipboardPanelView.onPin = panel::setPinned
+        root.clipboardPanelView.onDelete = panel::delete
+        root.clipboardPanelView.render(panel.state.value)
+    }
 
-    private fun onClipboardPromptRequested(@Suppress("UNUSED_PARAMETER") entryId: String) = Unit
+    private fun onClipboardRequested() {
+        rootView?.showClipboard()
+        clipboardPanelController?.refresh()
+        updateClipboardPromptVisibility()
+    }
 
-    private fun dismissClipboardPrompt() = Unit
+    private fun onClipboardPromptRequested(entryId: String) {
+        rootView?.let { pasteClipboardEntry(it, entryId) }
+    }
+
+    private fun dismissClipboardPrompt() = clipboardPromptController?.dismiss()
+
+    private fun pasteClipboardEntry(root: KeyboardRootView, entryId: String) {
+        val runtime = clipboardRuntimeInstance ?: return
+        val target = currentEditorTarget() ?: return
+        val previousSelection = currentRange(target.inputConnection)
+        val coordinator = ClipboardPasteCoordinator(runtime.repository, ::currentEditorTarget, runtime.grants)
+        sessionScope.launch {
+            when (val result = coordinator.pasteEntry(ClipboardEntryId(entryId), target)) {
+                is ClipboardPasteResult.Failure -> showRemoteFailure(result.failure.safeMessage)
+                is ClipboardPasteResult.Success -> {
+                    if (result.sensitive) {
+                        clipboardSecurity.onPaste(true)
+                        suggestionGate.taintForSession()
+                        cancelTranslation()
+                        stopRecording(launchTranscription = false)
+                        keyboardView?.remoteActionsEnabled = false
+                        invalidateSuggestions()
+                    } else {
+                        val nextSelection = currentRange(target.inputConnection)
+                        suggestionGate.recordSuccessfulMutation(
+                            SuggestionMutation.NON_SENSITIVE_PASTE,
+                            previousSelection,
+                            nextSelection,
+                        )
+                        captureEditorOwner(root)?.let(::updateSuggestions)
+                    }
+                    clipboardPromptController?.dismiss()
+                    root.showKeyboard()
+                    updateClipboardPromptVisibility()
+                }
+            }
+        }
+    }
+
+    private fun currentEditorTarget(): EditorTarget? {
+        val connection = currentInputConnection ?: return null
+        val info = currentInputEditorInfo ?: return null
+        val binding = currentInputBinding ?: return null
+        val packageName = info.packageName?.takeIf(String::isNotBlank) ?: return null
+        return EditorTarget(
+            sessionId = sessionGeneration,
+            uid = binding.uid,
+            packageName = packageName,
+            inputConnection = connection,
+            editorInfo = info,
+        )
+    }
 
     private fun retryTranslation(root: KeyboardRootView) {
         val failedAttempt = failedTranslationAttempt ?: return
@@ -342,6 +461,15 @@ open class JefeKeyboardService : InputMethodService() {
 
     private fun renderRail() {
         rootView?.renderRail(TopRailResolver.resolve(railInputs))
+        updateClipboardPromptVisibility()
+    }
+
+    private fun updateClipboardPromptVisibility() {
+        val root = rootView
+        val visible = root != null &&
+            root.mode == KeyboardRootMode.KEYBOARD &&
+            TopRailResolver.resolve(railInputs) is TopRailState.ClipboardPrompt
+        clipboardPromptController?.setVisible(visible)
     }
 
     private fun setSuggestions(values: List<String>) {
@@ -598,7 +726,7 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun startRecording() {
-        if (!editorPrivacy.allowDictation) return
+        if (!editorPrivacy.allowDictation || !clipboardSecurity.allowRemoteActions) return
         if (
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
@@ -700,6 +828,7 @@ open class JefeKeyboardService : InputMethodService() {
             try {
                 val result = transcribeAudio(file)
                 if (!isCurrentSession(generation, connection)) return@launch
+                if (!clipboardSecurity.allowRemoteActions) return@launch
                 when (result) {
                     is RemoteResult.Success -> {
                         if (connection.commitText(result.value, 1)) {
@@ -734,7 +863,7 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     private fun translateSelection(root: KeyboardRootView) {
-        if (!editorPrivacy.allowTranslation) return
+        if (!editorPrivacy.allowTranslation || !clipboardSecurity.allowRemoteActions) return
         val owner = captureEditorOwner(root) ?: return
         val snapshot = suggestionSnapshot
         val selectedText = owner.connection.getSelectedText(0)?.toString()
@@ -775,7 +904,8 @@ open class JefeKeyboardService : InputMethodService() {
         if (
             !isCurrentTranslationOwner(owner) ||
             translationJob?.isActive == true ||
-            !editorPrivacy.allowTranslation
+            !editorPrivacy.allowTranslation ||
+            !clipboardSecurity.allowRemoteActions
         ) {
             return
         }
@@ -1199,6 +1329,8 @@ open class JefeKeyboardService : InputMethodService() {
     }
 
     override fun onFinishInput() {
+        clipboardRuntimeInstance?.grants?.revokeSession(sessionGeneration)
+        clipboardRuntimeInstance?.editorSessions?.clear(sessionGeneration)
         cancelTranslation()
         stopRecording(launchTranscription = false)
         resetSession()
@@ -1212,6 +1344,8 @@ open class JefeKeyboardService : InputMethodService() {
         serviceScope.cancel()
         deletePendingAudioFiles()
         suggestionSnapshot = null
+        clipboardPromptCollection?.cancel()
+        clipboardPanelCollection?.cancel()
         super.onDestroy()
     }
 

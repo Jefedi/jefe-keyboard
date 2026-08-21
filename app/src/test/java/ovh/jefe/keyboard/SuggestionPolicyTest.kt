@@ -8,6 +8,16 @@ import org.junit.Test
 
 class SuggestionPolicyTest {
     @Test
+    fun `sensitive clipboard paste taints remote actions until next editor session`() {
+        val security = ClipboardSessionSecurity()
+
+        security.onPaste(sensitive = true)
+        assertFalse(security.allowRemoteActions)
+
+        security.startSession()
+        assertTrue(security.allowRemoteActions)
+    }
+    @Test
     fun `policy accepts prefix and context only after a local mutation`() {
         val prefix = SuggestionPolicy.contextOrNull(
             SuggestionPolicyInput("bo", true, true, true),

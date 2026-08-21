@@ -1936,6 +1936,8 @@ internal class TestJefeKeyboardService : JefeKeyboardService() {
     var transcription: (suspend (File) -> RemoteResult<String>)? = null
     var translation: (suspend (String) -> RemoteResult<String>)? = null
 
+    override fun createClipboardRuntime(): ovh.jefe.keyboard.clipboard.ClipboardRuntime? = null
+
     override fun getCurrentInputConnection(): InputConnection? = testConnection
 
     override fun getCurrentInputEditorInfo(): EditorInfo? = testEditorInfo

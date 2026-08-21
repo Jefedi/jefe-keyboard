@@ -12,6 +12,19 @@ internal enum class SuggestionMutation {
     NON_SENSITIVE_PASTE,
 }
 
+internal class ClipboardSessionSecurity {
+    var allowRemoteActions: Boolean = true
+        private set
+
+    fun startSession() {
+        allowRemoteActions = true
+    }
+
+    fun onPaste(sensitive: Boolean) {
+        if (sensitive) allowRemoteActions = false
+    }
+}
+
 internal class SuggestionSessionGate {
     private data class ExpectedSelectionUpdate(
         val previousSelection: EditorSelectionRange,

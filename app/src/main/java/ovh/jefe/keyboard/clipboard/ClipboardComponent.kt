@@ -13,18 +13,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
 
-internal class ClipboardComponent private constructor(context: Context) {
+internal interface ClipboardRuntime {
+    val repository: ClipboardRepository
+    val controller: ClipboardHistoryController
+    val payloadFiles: ClipboardPrivateFileStore
+    val grants: ClipboardGrantRegistry
+    val editorSessions: EditorSessionRegistry
+}
+
+internal class ClipboardComponent private constructor(context: Context) : ClipboardRuntime {
     private val applicationContext = context.applicationContext
     private val database = Room.databaseBuilder(
         applicationContext,
         ClipboardDatabase::class.java,
         "clipboard-history.db",
     ).build()
-    val repository: ClipboardRepository
-    val payloadFiles: ClipboardPrivateFileStore
-    val grants = ClipboardGrantRegistry()
-    val editorSessions = EditorSessionRegistry()
-    val controller: ClipboardHistoryController
+    override val repository: ClipboardRepository
+    override val payloadFiles: ClipboardPrivateFileStore
+    override val grants = ClipboardGrantRegistry()
+    override val editorSessions = EditorSessionRegistry()
+    override val controller: ClipboardHistoryController
 
     init {
         payloadFiles = ClipboardPrivateFileStore(applicationContext)

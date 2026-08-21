@@ -45,7 +45,6 @@ internal enum class ClipboardFailure(val safeMessage: String) {
     PINNED_STORAGE_FULL("Espace du presse-papiers insuffisant · Gérer les épinglés"),
     DATABASE_UNAVAILABLE("Historique momentanément indisponible"),
     CORRUPT_ENTRY("Contenu enregistré indisponible"),
-    KEY_UNAVAILABLE("Historique protégé inaccessible"),
     MIME_REJECTED("Cette application n’accepte pas ce contenu"),
     TEXT_TOO_LARGE_FOR_EDITOR("Cette application ne peut pas recevoir ce texte volumineux"),
     EDITOR_REJECTED("L’éditeur a refusé le contenu"),

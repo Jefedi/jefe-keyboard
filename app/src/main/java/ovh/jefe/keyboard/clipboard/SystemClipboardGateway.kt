@@ -41,26 +41,42 @@ internal class SystemClipItemSnapshot(
 }
 
 internal sealed interface ClipboardGatewayResult {
-    /** TimestampUnavailable represents unknown evidence; source evidence itself is never null. */
+    val source: ClipboardSourceObservation
+
+    /** Compatibility accessor for callers which only compare source markers. */
     val sourceMarker: ClipboardSourceMarker
+        get() = (source as? ClipboardSourceObservation.Observed)?.marker
+            ?: ClipboardSourceMarker.TimestampUnavailable
 
     class Empty(
-        override val sourceMarker: ClipboardSourceMarker,
+        override val source: ClipboardSourceObservation,
     ) : ClipboardGatewayResult {
         override fun toString(): String = "ClipboardGatewayResult.Empty"
     }
 
     class Captured(val snapshot: SystemClipSnapshot) : ClipboardGatewayResult {
-        override val sourceMarker: ClipboardSourceMarker = snapshot.sourceMarker
+        override val source: ClipboardSourceObservation =
+            ClipboardSourceObservation.Observed(snapshot.sourceMarker)
 
         override fun toString(): String = "ClipboardGatewayResult.Captured(redacted)"
     }
 
     class Failure(
         val failure: ClipboardFailure,
-        override val sourceMarker: ClipboardSourceMarker = ClipboardSourceMarker.TimestampUnavailable,
+        override val source: ClipboardSourceObservation =
+            ClipboardSourceObservation.Observed(ClipboardSourceMarker.TimestampUnavailable),
     ) : ClipboardGatewayResult {
         override fun toString(): String = "ClipboardGatewayResult.Failure($failure)"
+    }
+}
+
+internal sealed interface ClipboardSourceObservation {
+    data object NoPrimaryClip : ClipboardSourceObservation
+
+    class Observed(val marker: ClipboardSourceMarker) : ClipboardSourceObservation {
+        override fun equals(other: Any?): Boolean = other is Observed && marker == other.marker
+        override fun hashCode(): Int = marker.hashCode()
+        override fun toString(): String = "ClipboardSourceObservation.Observed(redacted)"
     }
 }
 
@@ -132,7 +148,7 @@ internal class SystemClipboardGateway(
     }
 
     fun capturePrimaryClip(): ClipboardGatewayResult = try {
-        val clip = clipboard.primaryClip() ?: return ClipboardGatewayResult.Empty(ClipboardSourceMarker.TimestampUnavailable)
+        val clip = clipboard.primaryClip() ?: return ClipboardGatewayResult.Empty(ClipboardSourceObservation.NoPrimaryClip)
         capture(clip)
     } catch (_: SecurityException) {
         ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED)
@@ -173,9 +189,15 @@ internal class SystemClipboardGateway(
             val sensitive = sensitiveFlagReader.isSensitive(description)
             captureBounded(clip, description, sensitive, sourceMarker)
         } catch (_: SecurityException) {
-            ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED, sourceMarker)
+            ClipboardGatewayResult.Failure(
+                ClipboardFailure.ACCESS_DENIED,
+                ClipboardSourceObservation.Observed(sourceMarker),
+            )
         } catch (_: RuntimeException) {
-            ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED, sourceMarker)
+            ClipboardGatewayResult.Failure(
+                ClipboardFailure.ACCESS_DENIED,
+                ClipboardSourceObservation.Observed(sourceMarker),
+            )
         }
     }
 
@@ -193,28 +215,29 @@ internal class SystemClipboardGateway(
         sensitive: Boolean,
         sourceMarker: ClipboardSourceMarker,
     ): ClipboardGatewayResult {
+        val source = ClipboardSourceObservation.Observed(sourceMarker)
         val itemCount = clip.itemCount
         val mimeTypeCount = description.mimeTypeCount
         val labelSource = description.label
-        if (itemCount == 0) return ClipboardGatewayResult.Empty(sourceMarker)
+        if (itemCount == 0) return ClipboardGatewayResult.Empty(source)
         if (itemCount > ClipboardLimits.MAX_GROUP_ITEMS) {
-            return ClipboardGatewayResult.Failure(ClipboardFailure.TOO_MANY_ITEMS, sourceMarker)
+            return ClipboardGatewayResult.Failure(ClipboardFailure.TOO_MANY_ITEMS, source)
         }
         if (mimeTypeCount > ClipboardLimits.MAX_MIME_TYPES) {
-            return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
+            return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, source)
         }
 
         val label = if (labelSource == null) {
             null
         } else {
-            copyLabel(labelSource) ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
+            copyLabel(labelSource) ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, source)
         }
         val mimeTypes = ArrayList<String>(mimeTypeCount)
         for (index in 0 until mimeTypeCount) {
             val mimeType = description.getMimeType(index)
-                ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
+                ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, source)
             if (mimeType.length > ClipboardLimits.MAX_MIME_CHARS) {
-                return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
+                return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, source)
             }
             mimeTypes += String(mimeType.toCharArray())
         }
@@ -225,15 +248,15 @@ internal class SystemClipboardGateway(
             val item = clip.getItemAt(index)
             val textSource = item.text
             val text = textSource?.let { copyBoundedText(it, totalTextChars) }
-                ?: if (textSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE, sourceMarker) else null
+                ?: if (textSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE, source) else null
             totalTextChars += text?.length ?: 0
             val htmlSource = item.htmlText
             val htmlText = htmlSource?.let { copyBoundedText(it, totalTextChars) }
-                ?: if (htmlSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE, sourceMarker) else null
+                ?: if (htmlSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE, source) else null
             totalTextChars += htmlText?.length ?: 0
             val uriSource = item.uri
             val uri = uriSource?.let(::copyUri)
-                ?: if (uriSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker) else null
+                ?: if (uriSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, source) else null
             items += SystemClipItemSnapshot(
                 text = text,
                 htmlText = htmlText,

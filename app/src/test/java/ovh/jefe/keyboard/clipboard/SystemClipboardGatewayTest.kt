@@ -63,7 +63,7 @@ class SystemClipboardGatewayTest {
         val result = SystemClipboardGateway(context).capturePrimaryClip()
 
         assertTrue(result is ClipboardGatewayResult.Empty)
-        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
+        assertEquals(ClipboardSourceObservation.NoPrimaryClip, result.source)
     }
 
     @Test
@@ -78,7 +78,10 @@ class SystemClipboardGatewayTest {
 
         assertEquals(ClipboardFailure.ACCESS_DENIED, (result as ClipboardGatewayResult.Failure).failure)
         assertFalse(result.toString().contains("SENTINEL-clipboard-secret"))
-        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
+        assertEquals(
+            ClipboardSourceObservation.Observed(ClipboardSourceMarker.TimestampUnavailable),
+            result.source,
+        )
     }
 
     @Test
@@ -92,7 +95,10 @@ class SystemClipboardGatewayTest {
         val result = gateway.capturePrimaryClip()
 
         assertTrue(result is ClipboardGatewayResult.Captured)
-        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
+        assertEquals(
+            ClipboardSourceObservation.Observed(ClipboardSourceMarker.TimestampUnavailable),
+            result.source,
+        )
     }
 
     @Test
@@ -106,7 +112,10 @@ class SystemClipboardGatewayTest {
         val result = gateway.capturePrimaryClip()
 
         assertTrue(result is ClipboardGatewayResult.Captured)
-        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
+        assertEquals(
+            ClipboardSourceObservation.Observed(ClipboardSourceMarker.TimestampUnavailable),
+            result.source,
+        )
     }
 
     @Test
@@ -121,7 +130,10 @@ class SystemClipboardGatewayTest {
         val result = gateway.capturePrimaryClip()
 
         assertEquals(ClipboardFailure.ACCESS_DENIED, (result as ClipboardGatewayResult.Failure).failure)
-        assertEquals(ClipboardSourceMarker.PlatformTimestamp(100L), result.sourceMarker)
+        assertEquals(
+            ClipboardSourceObservation.Observed(ClipboardSourceMarker.PlatformTimestamp(100L)),
+            result.source,
+        )
         assertFalse(result.toString().contains("extras denied"))
     }
 
@@ -247,11 +259,17 @@ class SystemClipboardGatewayTest {
         val accepted = gateway.capturePrimaryClip()
 
         assertEquals(ClipboardFailure.TOO_MANY_ITEMS, (rejected as ClipboardGatewayResult.Failure).failure)
-        assertEquals(ClipboardSourceMarker.PlatformTimestamp(100L), rejected.sourceMarker)
+        assertEquals(
+            ClipboardSourceObservation.Observed(ClipboardSourceMarker.PlatformTimestamp(100L)),
+            rejected.source,
+        )
         assertTrue(accepted is ClipboardGatewayResult.Captured)
         assertEquals(
             ClipboardSourceChange.DEFINITELY_CHANGED,
-            compareClipboardSource(rejected.sourceMarker, accepted.sourceMarker),
+            compareClipboardSource(
+                (rejected.source as ClipboardSourceObservation.Observed).marker,
+                (accepted.source as ClipboardSourceObservation.Observed).marker,
+            ),
         )
     }
 
@@ -379,6 +397,11 @@ class SystemClipboardGatewayTest {
 
         assertUnmodifiable(snapshot.mimeTypes)
         assertUnmodifiable(snapshot.items)
+    }
+
+    @Test
+    fun `clipboard failures do not expose an obsolete encryption error`() {
+        assertFalse(ClipboardFailure.entries.any { it.name == "KEY_UNAVAILABLE" })
     }
 
     private fun assertUnmodifiable(value: List<*>) {

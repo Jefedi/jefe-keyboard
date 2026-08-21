@@ -584,6 +584,32 @@ class JefeKeyboardServiceTest {
         assertEquals(7, connection.selectionEnd())
         assertTrue(connection.selectionAttemptsAfterCallback.isEmpty())
         assertTrue(connection.commitAttemptsAfterCallback.isEmpty())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `stale candidate cannot clear suggestions published by a newer editor action`() {
+        val connection = SynchronousCandidateCursorCallbackInputConnection(
+            context(),
+            "b here",
+            1,
+        )
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        val staleCandidate = root.railView.suggestionViews().first { it.text == "bon" }
+        connection.onCandidateCursorRead = {
+            connection.replaceAll("", 0)
+            service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+            requireNotNull(root.keyboardView.onKeyChar).invoke("j")
+        }
+
+        staleCandidate.performClick()
+
+        assertEquals("j", connection.text())
+        assertEquals(1, connection.selectionStart())
+        assertEquals(1, connection.selectionEnd())
+        assertTrue(root.railView.suggestionViews().any { it.text == "je" })
         service.onDestroy()
     }
 
@@ -677,6 +703,30 @@ class JefeKeyboardServiceTest {
         assertEquals("bo b", connection.text())
         assertEquals(4, connection.selectionStart())
         assertEquals(4, connection.selectionEnd())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `delayed expected callback during suggestion reads clears the prior rail`() {
+        val connection = SynchronousCandidateCursorCallbackInputConnection(
+            context(),
+            "b b",
+            1,
+        )
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
+        connection.onCandidateCursorRead = {
+            connection.select(5)
+            service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+        }
+
+        requireNotNull(root.keyboardView.onKeyChar).invoke("n")
+
+        assertEquals("bon b", connection.text())
+        assertEquals(5, connection.selectionStart())
+        assertEquals(5, connection.selectionEnd())
         assertTrue(root.railView.suggestionViews().isEmpty())
         service.onDestroy()
     }
@@ -802,6 +852,7 @@ class JefeKeyboardServiceTest {
         assertEquals(7, connection.selectionStart())
         assertEquals(13, connection.selectionEnd())
         assertFalse(root.railView.state is TopRailState.Translation)
+        assertTrue(root.railView.suggestionViews().isEmpty())
         service.onDestroy()
     }
 

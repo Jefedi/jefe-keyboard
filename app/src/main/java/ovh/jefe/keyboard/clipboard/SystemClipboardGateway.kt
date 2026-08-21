@@ -131,12 +131,18 @@ internal fun interface ClipboardSensitiveFlagReader {
     fun isSensitive(description: ClipDescription): Boolean
 }
 
+internal interface ClipboardGateway {
+    fun capturePrimaryClip(): ClipboardGatewayResult
+    fun startListening(callback: () -> Unit)
+    fun stopListening()
+}
+
 internal class SystemClipboardGateway(
     private val clipboard: ClipboardManagerAccess,
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val sourceMarkerReader: ClipboardSourceMarkerReader = PlatformClipboardSourceMarkerReader(),
     private val sensitiveFlagReader: ClipboardSensitiveFlagReader = PlatformClipboardSensitiveFlagReader,
-) {
+) : ClipboardGateway {
     constructor(context: Context) : this(
         AndroidClipboardManagerAccess(requireNotNull(context.getSystemService(ClipboardManager::class.java))),
     )
@@ -147,7 +153,7 @@ internal class SystemClipboardGateway(
         onPrimaryClipChanged?.invoke()
     }
 
-    fun capturePrimaryClip(): ClipboardGatewayResult = try {
+    override fun capturePrimaryClip(): ClipboardGatewayResult = try {
         val clip = clipboard.primaryClip() ?: return ClipboardGatewayResult.Empty(ClipboardSourceObservation.NoPrimaryClip)
         capture(clip)
     } catch (_: SecurityException) {
@@ -156,7 +162,7 @@ internal class SystemClipboardGateway(
         ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED)
     }
 
-    fun startListening(callback: () -> Unit) {
+    override fun startListening(callback: () -> Unit) {
         onPrimaryClipChanged = callback
         if (isListening.compareAndSet(false, true)) {
             try {
@@ -169,7 +175,7 @@ internal class SystemClipboardGateway(
         }
     }
 
-    fun stopListening() {
+    override fun stopListening() {
         onPrimaryClipChanged = null
         if (isListening.compareAndSet(true, false)) {
             try {

@@ -122,13 +122,21 @@ class SettingsPrivacyTest {
             application.attributes.getNamedItemNS(androidNamespace, "dataExtractionRules").nodeValue,
         )
         assertEquals(
-            setOf("full-backup-content:sharedpref:."),
+            setOf(
+                "full-backup-content:sharedpref:.",
+                "full-backup-content:database:.",
+                "full-backup-content:file:.",
+            ),
             backupExclusions(activity, R.xml.backup_rules),
         )
         assertEquals(
             setOf(
                 "cloud-backup:sharedpref:.",
+                "cloud-backup:database:.",
+                "cloud-backup:file:.",
                 "device-transfer:sharedpref:.",
+                "device-transfer:database:.",
+                "device-transfer:file:.",
             ),
             backupExclusions(activity, R.xml.data_extraction_rules),
         )

@@ -2,7 +2,7 @@
 
 Date : 2026-08-20
 
-Statut : conception validée par l’utilisateur le 2026-08-20 ; prête pour exécution des plans
+Statut : conception simplifiée validée par l’utilisateur le 2026-08-21 ; prête pour mise à jour du plan
 
 Branche de conception : `codex/keyboard-clipboard`
 
@@ -12,13 +12,13 @@ Cette évolution poursuit trois objectifs liés :
 
 1. corriger le rail de suggestions afin qu’aucune capsule vide ne soit dessinée ;
 2. rendre la traduction visiblement active pendant toute la requête ;
-3. ajouter un historique local et chiffré du presse-papiers, accessible depuis un onglet permanent du rail supérieur.
+3. ajouter un historique local dans le stockage privé Android, accessible depuis un onglet permanent du rail supérieur.
 
 L’identité visuelle retenue est **Bleu d’encre**. Elle existe en clair et en sombre et suit automatiquement le thème Android. Le rail supérieur devient une surface d’état stable, plate et non une rangée de trois capsules permanentes.
 
 L’historique est activé explicitement au premier usage. Il conserve sans expiration temporelle jusqu’à 500 entrées non épinglées et 250 Mo de contenu non épinglé. Chaque entrée, groupe compris, est limitée à 25 Mo. Les éléments épinglés ne sont soumis ni à la limite de nombre ni au quota cumulé de 250 Mo, mais restent soumis à la limite individuelle de 25 Mo ; ils ne sont jamais supprimés automatiquement.
 
-Les contenus signalés sensibles ne sont pas rejetés : ils sont chiffrés, masqués dans l’interface et collés en clair seulement après un appui volontaire. Ils sont exclus de la recherche, des suggestions et de toute opération réseau automatique.
+Les contenus signalés sensibles ne sont pas rejetés : ils sont conservés dans le stockage privé, masqués dans l’interface et collés en clair seulement après un appui volontaire. Ils sont exclus de la recherche, des suggestions et de toute opération réseau automatique.
 
 ## 2. Contexte et causes racines
 
@@ -40,27 +40,27 @@ L’application n’utilise actuellement ni `ClipboardManager`, ni base de donn�
 
 La conception reprend les éléments éprouvés suivants sans copier leurs faiblesses :
 
-- **HeliBoard** : écoute du presse-papiers, historique SQLite, déduplication, épinglage, suppression par geste et option de durée illimitée. Son implémentation persiste toutefois encore certains contenus signalés sensibles sans politique assez stricte de présentation ; Jefe Keyboard chiffrera et masquera ces données dès l’ingestion. [ClipboardHistoryManager](https://github.com/Helium314/HeliBoard/blob/50d13c1bd6c3f4ee6d69644b3d422145cb928503/app/src/main/java/helium314/keyboard/latin/ClipboardHistoryManager.kt)
+- **HeliBoard** : écoute du presse-papiers, historique SQLite, déduplication, épinglage, suppression par geste et option de durée illimitée. Son implémentation confirme qu’un stockage privé Android simple est viable, mais Jefe Keyboard applique une politique plus stricte de masquage sensible et d’exclusion des sauvegardes. [ClipboardHistoryManager](https://github.com/Helium314/HeliBoard/blob/50d13c1bd6c3f4ee6d69644b3d422145cb928503/app/src/main/java/helium314/keyboard/latin/ClipboardHistoryManager.kt)
 - **FlorisBoard** : séparation entre gestionnaire, base Room, flux d’état et interface ; sections épinglées/récentes ; filtrage et nettoyage transactionnel. Cette séparation sert de modèle architectural. [ClipboardManager](https://github.com/florisboard/florisboard/blob/2a44855c7fcce943a2d3b2092fe45808037ad258/app/src/main/kotlin/dev/patrickgold/florisboard/ime/clipboard/ClipboardManager.kt)
-- **FUTO Keyboard** : recherche, mosaïque/colonne, quotas de fichiers, copie privée des médias et nettoyage des orphelins. Jefe Keyboard évite son stockage JSON en clair et ses risques de journalisation. [ClipboardHistoryAction](https://github.com/futo-org/android-keyboard/blob/eaf0389f962b0dba07778d0feab6511e6e98c581/java/src/org/futo/inputmethod/latin/uix/actions/clipboard/ClipboardHistoryAction.kt)
+- **FUTO Keyboard** : recherche, mosaïque/colonne, quotas de fichiers, copie privée des médias et nettoyage des orphelins. Jefe Keyboard reprend les bornes et le nettoyage, mais utilise Room plutôt qu’un fichier JSON et interdit toute journalisation du contenu. [ClipboardHistoryAction](https://github.com/futo-org/android-keyboard/blob/eaf0389f962b0dba07778d0feab6511e6e98c581/java/src/org/futo/inputmethod/latin/uix/actions/clipboard/ClipboardHistoryAction.kt)
 - **AnySoftKeyboard** : historique opt-in et retrait du listener lors de la désactivation, mais sa liste RAM de 15 textes est insuffisante pour le besoin durable. [ClipboardV11](https://github.com/AnySoftKeyboard/AnySoftKeyboard/blob/6643bda9d400c0ca3025e67ca46361e28ba5e441/ime/app/src/main/java/com/anysoftkeyboard/devicespecific/ClipboardV11.java)
 - **AOSP LatinIME** : référence pour le cycle asynchrone des suggestions, mais ne fournit pas d’historique du presse-papiers.
 
-Android recommande Room pour les données structurées et Android Keystore pour protéger les clés cryptographiques. [Room](https://developer.android.com/training/data-storage/room), [Android Keystore](https://developer.android.com/privacy-and-security/keystore)
+Android recommande Room pour les données structurées et le stockage interne app-private pour les données propres à l’application. Jefe Keyboard suit ce modèle sans ajouter de couche cryptographique applicative. [Room](https://developer.android.com/training/data-storage/room), [stockage interne](https://developer.android.com/training/data-storage/app-specific#internal)
 
 ## 4. Décisions produit validées
 
 ### 4.1 Activation et capture
 
 - L’onglet presse-papiers est visible même lorsque l’historique est désactivé.
-- Au premier appui, une explication courte décrit le stockage local chiffré, l’absence d’expiration temporelle, les quotas, la conservation des contenus sensibles masqués et la possibilité de tout supprimer.
+- Au premier appui, une explication courte décrit le stockage local privé, l’absence d’expiration temporelle, les quotas, la conservation des contenus sensibles masqués et la possibilité de tout supprimer.
 - L’utilisateur active ensuite explicitement l’historique.
 - Juste après cette activation, le clip système courant est importé une fois s’il respecte la policy ; aucune capture antérieure n’est reconstruite.
 - L’écoute utilise le cycle de vie normal de l’IME, sans service permanent et sans notification persistante.
-- Si Android a arrêté le processus, le presse-papiers système courant est relu au prochain démarrage, sauf après `Tout effacer` ou une réinitialisation confirmée : dans ce cas le clip courant reste supprimé logiquement jusqu’au prochain changement prouvé du presse-papiers. Les copies intermédiaires éventuellement survenues pendant l’arrêt ne peuvent pas être récupérées. Après un clear/reset, le contrôleur persiste le marqueur source capturé avant la purge, jamais un booléen d’identité. Sur API 31+, seul un callback dont le timestamp source non nul est différent peut lever la suppression ; timestamp identique (collision possible) ou absent reste supprimé. Sur API 24–30, où les callbacks de classification n’existent pas, le prochain callback listener est la preuve legacy documentée. Le démarrage ne lève jamais ce marqueur.
+- Si Android a arrêté le processus, le presse-papiers système courant est relu au prochain démarrage, sauf après `Tout effacer` : dans ce cas le clip courant observé avant la purge reste supprimé logiquement jusqu’au prochain changement prouvé du presse-papiers. Les copies intermédiaires éventuellement survenues pendant l’arrêt ne peuvent pas être récupérées. Le contrôleur persiste une observation source typée, jamais un booléen d’identité : `NoPrimaryClip` n’active aucune suppression, tandis que `Observed(marker)` devient `Suppressed(marker)`. Sur API 31+, seul un callback dont le timestamp source non nul est différent peut lever cette suppression ; timestamp identique (collision possible) ou indisponible reste supprimé. Sur API 24–30, où les callbacks de classification n’existent pas, le prochain callback listener est la preuve legacy documentée. Le démarrage ne lève jamais ce marqueur.
 - Tant que le processus vit, chaque changement est placé dans une file FIFO d’ingestion ; une copie lente n’est pas abandonnée parce qu’une nouvelle arrive.
 - Désactiver l’historique demande confirmation puis efface la base, les fichiers, les miniatures, les autorisations temporaires et les caches mémoire.
-- Sur Android 7 à 9, ce consentement avertit aussi que le système permet encore à d’autres applications en arrière-plan de lire le presse-papiers avant sa copie dans l’historique chiffré.
+- Sur Android 7 à 9, ce consentement avertit aussi que le système permet encore à d’autres applications en arrière-plan de lire le presse-papiers avant sa copie dans l’historique privé.
 
 Android 10 et versions ultérieures autorisent le clavier par défaut à lire le presse-papiers même lorsqu’une application ordinaire sans focus ne le peut pas. Android reste toutefois libre d’arrêter un processus pour récupérer de la mémoire. [Accès Android 10](https://developer.android.com/about/versions/10/privacy/changes#clipboard-data), [cycle de vie des processus](https://developer.android.com/guide/components/activities/process-lifecycle)
 
@@ -80,13 +80,13 @@ Un `Intent` exécutable n’est pas un contenu collable dans un éditeur et n’
 
 Le HTML est conservé avec son repli texte, mais n’est jamais rendu dans une `WebView` du clavier. Un lien `http`, `https`, `mailto` ou `tel` est conservé comme chaîne exacte et n’est jamais ouvert ni téléchargé par le clavier. Les MIME, libellés et noms venant d’un fournisseur sont considérés non fiables ; ils ne servent jamais de chemin de fichier. Les miniatures sont facultatives, décodées avec des dimensions et une mémoire bornées, et leur échec ne fait pas perdre le contenu original.
 
-La taille maximale de 25 Mo s’applique au groupe complet après copie dans le stockage privé. Un groupe contient au plus 32 items. Les flux sont copiés de manière bornée et annulable, avec un délai maximal de 30 secondes par entrée : l’ingestion s’arrête dès qu’une limite est dépassée, sans conserver de fichier partiel. Les métadonnées sont bornées avant traitement : MIME ASCII de 255 caractères, libellé ou nom de 4 096 caractères chiffrés et aperçu nettoyé de 256 caractères au plus. Les contrôles invisibles et caractères bidirectionnels sont neutralisés dans l’affichage, sans modifier le payload collé.
+La taille maximale de 25 Mo s’applique au groupe complet après copie dans le stockage privé. Un groupe contient au plus 32 items. Les flux sont copiés de manière bornée et annulable, avec un délai maximal de 30 secondes par entrée : l’ingestion s’arrête dès qu’une limite est dépassée, sans conserver de fichier partiel. Les métadonnées sont bornées avant traitement : MIME ASCII de 255 caractères, libellé ou nom de 4 096 caractères et aperçu nettoyé de 256 caractères au plus. Les contrôles invisibles et caractères bidirectionnels sont neutralisés dans l’affichage, sans modifier le payload collé.
 
 ### 4.3 Rétention
 
 - aucune expiration fondée sur le temps ;
 - maximum 500 entrées non épinglées ;
-- maximum 250 Mo chiffrés pour les entrées non épinglées ;
+- maximum 250 Mo stockés pour les entrées non épinglées ;
 - maximum 25 Mo par entrée ;
 - aucune limite automatique de nombre ni de volume cumulé sur les entrées épinglées, la limite individuelle de 25 Mo restant applicable ;
 - les épinglés ne sont jamais supprimés automatiquement ;
@@ -95,7 +95,7 @@ La taille maximale de 25 Mo s’applique au groupe complet après copie dans le 
 - une entrée identique existante remonte en tête et conserve son état épinglé au lieu de créer un doublon ;
 - la sensibilité est monotone lors d’une déduplication : une entrée déjà ou nouvellement sensible reste sensible et n’est jamais rétrogradée par une copie ultérieure.
 
-Dans cette spécification, `1 Mo = 1 048 576 octets`. `storedByteSize` compte tous les octets attribuables à l’entrée après chiffrement : ciphertexts, nonces, tags, manifest, miniatures et fichiers ; seul l’overhead global des pages SQLite est exclu. La limite de 25 Mo s’applique aussi aux épinglés. Le repository réserve l’espace temporaire avant lecture, refuse proprement un manque d’espace, puis purge par `lastCopiedAt` les plus anciens non épinglés jusqu’au respect simultané des limites de 500 entrées et 250 Mo. L’entrée qui vient d’être copiée est conservée ; les épinglés ne sont jamais choisis par la purge.
+Dans cette spécification, `1 Mo = 1 048 576 octets`. `storedByteSize` compte les octets du manifest, des payloads, miniatures et fichiers attribuables à l’entrée ; seul l’overhead global des pages SQLite est exclu. La limite de 25 Mo s’applique aussi aux épinglés. Le repository réserve l’espace temporaire avant lecture, refuse proprement un manque d’espace, puis purge par `lastCopiedAt` les plus anciens non épinglés jusqu’au respect simultané des limites de 500 entrées et 250 Mo. L’entrée qui vient d’être copiée est conservée ; les épinglés ne sont jamais choisis par la purge.
 
 ### 4.4 Contenus sensibles
 
@@ -108,7 +108,7 @@ Une entrée est marquée sensible lorsque :
 
 Une entrée sensible :
 
-- est persistée et chiffrée comme les autres ;
+- est persistée dans le même stockage privé que les autres ;
 - est affichée sous la forme `Contenu sensible ••••••` avec type, taille et heure, sans extrait, nom de fichier ni miniature ;
 - n’est jamais indexée dans la recherche ;
 - n’est jamais proposée dans les suggestions lexicales ;
@@ -130,7 +130,7 @@ Adaptateur Android minimal autour de `ClipboardManager` :
 
 - lit un instantané défensif du `primaryClip` ;
 - acquiert d’abord le marqueur source dans un wrapper défensif dès la description obtenue, puis fige le flag sensible et chaque unité UTF-16 de texte/libellé avant toute validation ou copie ultérieure ;
-- fournit sur chaque résultat, même vide ou en échec, un marqueur source typé non nul pour la suppression anti-réimport : timestamp API 31+ différent = changement prouvé, timestamp égal = collision possible, `TimestampUnavailable` = inconnu ;
+- fournit sur chaque résultat une observation source typée non nulle, indépendante de l’acceptation du contenu : `NoPrimaryClip` ou `Observed(marker)` ; dans le marqueur, timestamp API 31+ différent = changement prouvé, timestamp égal = collision possible, `TimestampUnavailable` = inconnu ;
 - enregistre et retire le listener ;
 - transforme les exceptions de sécurité ou de fournisseur en résultats typés ;
 - ne persiste rien et ne dépend pas de l’interface.
@@ -146,14 +146,14 @@ Composant pur qui décide :
 - libellé public autorisé ;
 - raison d’un rejet présentable sans contenu privé.
 
-#### `ClipboardCrypto`
+#### `ClipboardPrivateStore`
 
-- génère une clé AES-256-GCM non exportable dans Android Keystore ;
-- génère une clé HMAC-SHA-256 distincte pour les empreintes de déduplication ;
-- utilise un nonce aléatoire unique par objet ;
-- authentifie version, identifiant et type comme données associées ;
-- chiffre les textes, noms, manifests, miniatures et fichiers ;
-- refuse toute donnée altérée sans retourner de texte partiel.
+- conserve les données structurées dans une base Room du stockage interne de l’application ;
+- conserve les médias et fichiers dans `noBackupFilesDir/clipboard`, sous des identifiants aléatoires qui ne reprennent jamais un nom fournisseur ;
+- n’ajoute ni chiffrement applicatif, ni Android Keystore, ni format cryptographique propriétaire ;
+- utilise des fichiers temporaires privés, `fsync` et renommage atomique avant publication ;
+- supprime les fragments et fichiers orphelins lors de la réconciliation ;
+- ne place jamais de payload dans le cache externe, le stockage partagé ou un répertoire sauvegardable.
 
 #### `ClipboardHistoryRepository`
 
@@ -172,10 +172,10 @@ Interface de stockage indépendante de Room. Elle expose des flux d’état et d
 
 Implémentation recommandée :
 
-- Room conserve l’identifiant, la date, le type générique, `storedByteSize`, l’état épinglé, le marqueur sensible et l’empreinte HMAC ;
+- Room conserve l’identifiant, la date, le type générique, `storedByteSize`, l’état épinglé, le marqueur sensible et l’empreinte SHA-256 de déduplication ;
 - Room conserve aussi les états techniques `STAGING`, `READY`, `PROMOTING`, `REVOKING` et `DELETING` pour permettre la reprise après interruption ;
-- les contenus textuels et petits manifests sont des BLOB chiffrés ;
-- les médias et fichiers sont stockés sous des noms aléatoires dans un répertoire interne dédié, toujours chiffrés ;
+- les contenus textuels et petits manifests sont stockés directement dans la base privée ;
+- les médias et fichiers sont stockés sous des noms aléatoires dans `noBackupFilesDir/clipboard` ;
 - Room protège les transitions de métadonnées par transaction, tandis que les fichiers suivent un protocole en deux phases avec renommage dans le même répertoire ;
 - une entrée n’est observable qu’en état `READY` ; `STAGING`, `PROMOTING`, `REVOKING` et `DELETING` sont internes et la réconciliation finit ou annule ces transitions ;
 - les opérations disque s’exécutent hors du thread principal.
@@ -199,7 +199,7 @@ Fournisseur non exporté globalement, avec `grantUriPermissions=true` :
 - reçoit un jeton aléatoire temporaire lié à une entrée et au type MIME ;
 - lie aussi ce jeton à la session d’entrée et à l’UID non usurpable fourni par `InputBinding` pour l’application destinataire, puis vérifie que le package éditeur correspond à ce même UID ;
 - ouvre un pipe en lecture seule ;
-- déchiffre en flux, sans fichier clair temporaire ;
+- diffuse le payload privé en flux, sans copie temporaire dans un emplacement partagé ;
 - autorise au plus trois ouvertures par le bon UID pendant une fenêtre de 60 secondes ; après la troisième autorisation, aucune nouvelle ouverture ni metadata n’est acceptée, mais cette troisième lecture et les précédentes peuvent finir ;
 - annule et ferme les lectures actives dès la première des conditions suivantes : fenêtre écoulée, session changée, entrée supprimée ou révocation explicite ;
 - refuse un jeton inconnu, expiré, supprimé ou d’un MIME différent.
@@ -214,7 +214,7 @@ Conteneur d’IME qui sépare :
 - la feuille d’actions épingler/supprimer ;
 - le mode de recherche interne.
 
-La mosaïque utilise des vues Android standards recyclées pour le défilement, l’accessibilité et la gestion de centaines d’éléments. `KeyboardView` conserve le rendu des touches et n’absorbe pas la base, le chiffrement ou le défilement.
+La mosaïque utilise des vues Android standards recyclées pour le défilement, l’accessibilité et la gestion de centaines d’éléments. `KeyboardView` conserve le rendu des touches et n’absorbe pas la base, le stockage ou le défilement.
 
 ### 5.2 Modèle de données
 
@@ -226,33 +226,33 @@ La mosaïque utilise des vues Android standards recyclées pour le défilement, 
 - `isPinned` ;
 - `isSensitive` ;
 - `storedByteSize` ;
-- `fingerprintHmac` ;
+- `fingerprintSha256` ;
 - `storageState` (`STAGING`, `READY`, `PROMOTING`, `REVOKING`, `DELETING`) ;
-- `encryptedManifest` ;
-- référence optionnelle vers un conteneur chiffré immuable par entrée, contenant des frames authentifiées distinctes.
+- `manifest` privé ;
+- référence optionnelle vers un conteneur privé immuable par entrée.
 
-Le manifest chiffré contient les MIME, replis texte, noms, ordre des éléments et informations nécessaires au collage. Aucune valeur utilisateur n’est stockée dans une colonne indexable en clair. L’empreinte porte sur le type, les MIME, l’ordre et les octets exacts du payload, mais pas sur date, épinglage ou sensibilité ; deux copies identiques peuvent ainsi fusionner puis appliquer la règle de sensibilité monotone sans modifier le contenu collé.
+Le manifest privé contient les MIME, replis texte, noms, ordre des éléments et informations nécessaires au collage. Les valeurs sensibles ne sont jamais ajoutées à un index de recherche ni exposées dans une vue de métadonnées. L’empreinte SHA-256 porte sur le type, les MIME, l’ordre et les octets exacts du payload, mais pas sur date, épinglage ou sensibilité ; deux copies identiques peuvent ainsi fusionner puis appliquer la règle de sensibilité monotone sans modifier le contenu collé.
 
 ### 5.3 Flux d’ingestion
 
 1. Le listener signale un changement.
 2. Le gateway prend immédiatement un instantané du clip courant dans un bloc défensif et le place dans la file FIFO.
 3. La policy détermine type, sensibilité et limites.
-4. Les URI sont ouvertes dès que possible, lues une seule fois et copiées en flux dans le conteneur chiffré préalloué de l’entrée ; une révocation de permission produit un échec sûr.
-5. Le manifest est chiffré et son empreinte HMAC calculée.
+4. Les URI sont ouvertes dès que possible, lues une seule fois et copiées en flux dans le conteneur privé préalloué de l’entrée ; une révocation de permission produit un échec sûr.
+5. Le manifest privé et l’empreinte SHA-256 de déduplication sont calculés.
 6. Le repository crée l’état `STAGING`, finalise les fichiers par renommage local, passe l’entrée à `READY`, puis purge les plus anciens non épinglés. Un crash entre ces étapes est réparé au démarrage sans exposer d’entrée incomplète.
 7. Le contrôleur publie la nouvelle liste et une proposition de collage pendant 20 secondes réellement visibles.
 8. Toute annulation ou erreur supprime les fragments temporaires.
 
-Le bouton `Tout effacer` écrit d’abord un état durable `CLEARING_ENABLED`, pose une barrière sur l’ingestion, retire temporairement l’écoute, annule et joint le travail actif ainsi que la file déjà acceptée, puis capture le clip courant **avant** de persister le marqueur de son résultat et de purger. Le marqueur est orthogonal à l’acceptation : `Captured`, `Failure` borné et `Empty` borné le portent tous lorsqu’une description a été observée, sans rendre les métadonnées dans l’erreur ; il est absent seulement sans clip/description observable. Un crash reprend ce clear avant toute écoute. Le marqueur survit à un redémarrage : sur API 31+, le listener capture d’abord le clip et ne le retire que si son timestamp source non nul diffère du timestamp persisté ; égal est `SAME_OR_COLLIDING`, absent est `UNKNOWN`, et tous deux restent supprimés. Sur API 24–30, le prochain callback listener est la preuve legacy du changement. Le démarrage ne retire jamais le marqueur ; ainsi, aucune copie antérieure à la confirmation ne peut réapparaître après l’effacement.
+Le bouton `Tout effacer` écrit d’abord un état durable `CLEARING_ENABLED`, pose une barrière sur l’ingestion, retire temporairement l’écoute, annule et joint le travail actif ainsi que la file déjà acceptée, puis capture le clip courant **avant** de persister son observation source et de purger. Cette observation est orthogonale à l’acceptation : `Captured`, `Failure` borné et `Empty` borné conservent `Observed(marker)` lorsqu’une description a été vue, sans rendre les métadonnées dans l’erreur ; l’absence réelle de clip produit `NoPrimaryClip`. Le contrôleur écrit alors respectivement `Suppressed(marker)` ou `NotSuppressed`. Un crash reprend ce clear avant toute écoute. Sur API 31+, le listener capture d’abord le clip et ne lève `Suppressed` que si son timestamp source non nul diffère du timestamp persisté ; égal est `SAME_OR_COLLIDING`, indisponible est `UNKNOWN`, et tous deux restent supprimés. Sur API 24–30, le prochain callback listener est la preuve legacy du changement. Le démarrage ne retire jamais le marqueur ; ainsi, aucune copie antérieure à la confirmation ne peut réapparaître après l’effacement.
 
 ### 5.4 Flux de collage
 
 Pour le texte et les liens :
 
-- calcul de la taille UTF-8 depuis le manifest authentifié ;
+- calcul de la taille UTF-8 depuis le manifest appartenant à la même entrée `READY` ;
 - vérification de la connexion et de la session courantes ;
-- jusqu’à 128 Kio UTF-8, déchiffrement borné en mémoire puis `commitText` unique ;
+- jusqu’à 128 Kio UTF-8, lecture bornée en mémoire puis `commitText` unique ;
 - au-delà, transfert exact par URI temporaire `text/plain` et un unique `commitContent` si l’éditeur annonce ce MIME ;
 - sinon refus avant mutation avec `Cette application ne peut pas recevoir ce texte volumineux` ;
 - en cas de retour `false`, Jefe Keyboard arrête l’action et ne tente aucune seconde mutation.
@@ -342,7 +342,7 @@ La vue approuvée présente :
 - section `Épinglés` ;
 - section `Récents` en grille de deux colonnes ;
 - aperçus texte bornés ;
-- miniatures chiffrées pour les médias non sensibles ;
+- miniatures privées pour les médias non sensibles ;
 - tuiles de type et nom pour les fichiers ;
 - tuile générique verrouillée pour les sensibles ;
 - tuile de groupe ouvrant la liste ordonnée de ses éléments et leurs actions de collage compatibles ;
@@ -357,7 +357,7 @@ Le panneau ne s’appuie pas sur un `EditText` qui déclencherait récursivement
 - les touches alphabétiques existantes alimentent une requête locale au lieu de l’éditeur ;
 - retour arrière modifie la requête ;
 - fermer la recherche rend les touches à l’éditeur ;
-- seuls les textes et noms non sensibles déchiffrés dans la session du panneau sont comparés ;
+- seuls les textes et noms non sensibles chargés pendant la session du panneau sont comparés ;
 - recherche annulable sur un dispatcher disque, avec résultats versionnés pour qu’une ancienne requête ne remplace jamais la nouvelle ;
 - aucune requête ou index de recherche utilisateur n’est persisté en clair.
 
@@ -400,25 +400,25 @@ Exigences :
 
 ### 8.1 Garanties
 
-- stockage app-private et chiffré ;
-- clés non exportables Android Keystore ;
+- stockage app-private dans la zone normale protégée par le profil utilisateur Android ;
+- aucune couche cryptographique applicative ni clé Android Keystore : ce choix explicite privilégie la simplicité, la fiabilité et la vitesse de développement ;
 - aucune sauvegarde cloud ni transfert appareil-à-appareil ;
 - exclusions explicites des domaines `database`, `file` et `sharedpref` dans les règles legacy et modernes ;
 - aucune télémétrie ni journalisation du contenu ;
 - aucune dépendance du module presse-papiers vers Whisper ou Translate ;
-- aucun fichier déchiffré durable ;
+- aucun payload copié dans le stockage partagé, externe ou sauvegardable ;
 - autorisations provider minimales, temporaires et en lecture seule ;
 - aucune exécution ou prévisualisation active du HTML, des `Intent` ou des fichiers enregistrés ;
-- buffers mutables remis à zéro au mieux et références de texte en clair relâchées à la fermeture du panneau et à la destruction de session ; aucun plaintext n’est conservé dans un cache longue durée.
+- références de texte relâchées à la fermeture du panneau et à la destruction de session ; aucun contenu n’est conservé dans un cache longue durée distinct de l’historique choisi par l’utilisateur.
 
 Un contenu du presse-papiers n’est jamais envoyé automatiquement à un service distant. Après collage, un contenu non sensible devient du texte de l’éditeur ; une traduction ultérieure n’est permise que par une nouvelle sélection et une action explicite dans un champ non privé.
 
-Le service maintient une politique de provenance conservatrice pour les sensibles : après le collage d’une entrée sensible, la traduction est désactivée jusqu’au prochain `onStartInput` valide, et une sélection exactement égale à une entrée texte sensible connue est également refusée par comparaison HMAC. Les champs mot de passe, PIN et `IME_FLAG_NO_PERSONALIZED_LEARNING` désactivent suggestions, traduction et dictée distante. Jefe Keyboard ne transmet ainsi jamais directement une entrée marquée sensible. Une fois le texte modifié dans une application tierce ou après une nouvelle session, Android ne fournit toutefois aucun marquage de provenance fiable permettant au clavier de reconnaître toutes ses sous-parties ; cette limite est annoncée honnêtement et aucune promesse impossible n’est faite au-delà de la session contrôlée par l’IME.
+Le service maintient une politique de provenance conservatrice pour les sensibles : après le collage d’une entrée sensible par l’historique, la traduction et les suggestions sont désactivées jusqu’au prochain `onStartInput` valide. Les champs mot de passe, PIN et `IME_FLAG_NO_PERSONALIZED_LEARNING` désactivent suggestions, traduction et dictée distante. Une fois le texte modifié dans une application tierce, collé par un autre chemin ou repris dans une nouvelle session, Android ne fournit aucun marquage de provenance fiable permettant au clavier de reconnaître toutes ses sous-parties ; cette limite est annoncée honnêtement et aucune comparaison persistante de secrets n’est ajoutée.
 
 ### 8.2 Limites honnêtes
 
 - Android 7 à 9 autorise d’autres applications en arrière-plan à lire le presse-papiers système ; Jefe Keyboard ne peut pas corriger cette exposition avant ingestion. [Secure Clipboard Handling](https://developer.android.com/privacy-and-security/risks/secure-clipboard-handling)
-- Un téléphone déverrouillé et un processus IME compromis peuvent demander au Keystore de déchiffrer les entrées ; le chiffrement protège surtout les fichiers au repos et les extractions hors contexte.
+- Le bac à sable et le chiffrement du téléphone protègent contre une application Android ordinaire, mais pas contre un appareil rooté et déverrouillé, un processus IME compromis ou une extraction disposant déjà des clés du profil utilisateur. Ce risque est accepté en contrepartie d’un stockage plus simple et plus fiable.
 - Le mode sans service permanent peut manquer des copies lorsque le processus est absent.
 - Les fournisseurs de contenus peuvent refuser ou révoquer une URI avant que sa copie privée soit terminée.
 - Les API IME Android ne permettent pas un collage atomique de plusieurs fichiers riches ; c’est pourquoi l’interface les colle individuellement au lieu de simuler une atomicité impossible.
@@ -437,8 +437,7 @@ Toutes les erreurs sont typées et ne contiennent jamais le payload utilisateur.
 - format de collage refusé : `Cette application n’accepte pas ce contenu` ;
 - gros texte refusé par l’éditeur : `Cette application ne peut pas recevoir ce texte volumineux`, avant toute mutation ;
 - base momentanément indisponible : état réessayable sans bloquer la saisie ;
-- entrée corrompue : isolée et marquée indisponible, sans crash ni déchiffrement partiel ;
-- clé Keystore perdue ou invalidée : état `Historique protégé inaccessible` avec action explicite de réinitialisation ;
+- entrée corrompue ou fichier manquant : isolé et marqué indisponible, sans crash ni collage partiel ;
 - suppression interrompue : reprise/réconciliation au démarrage ;
 - résultat asynchrone obsolète : ignoré par génération de session.
 
@@ -451,7 +450,6 @@ Une nouvelle catégorie `Presse-papiers` expose :
 - action `Ouvrir l’historique` ;
 - action `Tout effacer` avec confirmation ;
 - action `Désactiver et effacer` avec confirmation ;
-- action `Réinitialiser l’historique protégé`, visible uniquement si la clé est inaccessible et toujours confirmée ;
 - compteur d’éléments et taille actuelle sans révéler de contenu.
 
 Les quotas validés ne sont pas configurables dans la première version afin d’éviter des combinaisons non testées et une interface de réglages inutilement complexe.
@@ -471,14 +469,14 @@ Le développement suivra RED → GREEN → REFACTOR pour chaque tranche.
 - priorité des états du rail ;
 - règles de libellé et de troncature sans fuite sensible.
 
-### 11.2 Chiffrement
+### 11.2 Stockage privé et sauvegardes
 
-- aller-retour AES-GCM texte et flux ;
-- nonce différent pour deux payloads identiques ;
-- altération ciphertext/tag/AAD rejetée ;
-- clé absente ou invalidée ;
-- empreinte HMAC stable sans contenu en clair ;
-- aucun fichier clair résiduel après succès, erreur ou annulation.
+- base Room créée uniquement dans le stockage interne de l’application ;
+- médias et documents uniquement dans `noBackupFilesDir/clipboard` ;
+- aucun fichier dans le stockage partagé ou externe ;
+- règles legacy et modernes excluant base, préférences d’activation et fichiers du backup cloud et du transfert appareil-à-appareil ;
+- écriture temporaire privée, publication atomique et aucun fragment résiduel après succès, erreur, annulation ou redémarrage ;
+- permissions de fichiers et provider limitées au processus ou au grant temporaire prévu.
 
 ### 11.3 Repository et migrations
 
@@ -491,7 +489,7 @@ Le développement suivra RED → GREEN → REFACTOR pour chaque tranche.
 ### 11.4 Service et Android
 
 - listener enregistré seulement après consentement ;
-- relance et récupération du primary clip, sauf marqueur durable après clear/reset jusqu’à une nouvelle copie ;
+- relance et récupération du primary clip, sauf marqueur durable après `Tout effacer` jusqu’à une nouvelle copie prouvée ;
 - exception `ClipboardManager`/`ContentResolver` absorbée ;
 - deux copies rapides dont un média lent sont ingérées dans l’ordre sans abandon par génération ;
 - saturation de file et timeout fournisseur produisent un échec visible sans fragment résiduel ;
@@ -501,7 +499,7 @@ Le développement suivra RED → GREEN → REFACTOR pour chaque tranche.
 - grant provider temporaire testé depuis un second APK/UID, mauvais UID/MIME/session refusé, troisième lecture complète, quatrième refusée, expiration et suppression ;
 - changement de session pendant ingestion ou collage ;
 - champ mot de passe ou privé : historique disponible, entrées sensibles masquées, suggestions/traduction/dictée distante désactivées ;
-- collage sensible : traduction bloquée pour la session et comparaison HMAC exacte après relance ;
+- collage sensible : traduction et suggestions bloquées pour la session contrôlée par l’IME ;
 - désactivation : retrait immédiat du listener, aucune capture ultérieure, grants révoqués, purge intégrale et redémarrage vide.
 
 ### 11.5 Interface
@@ -522,7 +520,7 @@ Le développement suivra RED → GREEN → REFACTOR pour chaque tranche.
 ### 11.6 Gate final
 
 - `testDebugUnitTest` ;
-- `connectedDebugAndroidTest` sur émulateur API 24 et API 34 pour Keystore, Room, provider, grants URI et cycle de vie réel ;
+- `connectedDebugAndroidTest` sur émulateur API 24 et API 34 pour Room, stockage privé, provider, grants URI et cycle de vie réel ;
 - `lintDebug` sans erreur ;
 - `assembleDebug` ;
 - inspection de l’APK, du manifest, des règles de sauvegarde et de la signature ;
@@ -536,7 +534,7 @@ La fonctionnalité est terminée lorsque :
 1. aucun rail vide ne dessine de capsules ;
 2. la traduction affiche un état persistant et ne peut pas être lancée deux fois ;
 3. le presse-papiers est opt-in et fonctionne sans notification permanente ;
-4. tous les contenus collables prévus sont copiés dans le stockage privé chiffré ou échouent avec une raison sûre ;
+4. tous les contenus collables prévus sont copiés dans le stockage privé Android ou échouent avec une raison sûre ;
 5. les sensibles sont masqués partout mais collables en clair sur appui ;
 6. la proposition de collage apparaît 20 secondes avec début/type approprié ;
 7. les quotas, épinglés, doublons, recherche, suppression et effacement respectent les règles validées ;

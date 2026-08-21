@@ -57,7 +57,7 @@ Android recommande Room pour les données structurées et Android Keystore pour 
 - L’utilisateur active ensuite explicitement l’historique.
 - Juste après cette activation, le clip système courant est importé une fois s’il respecte la policy ; aucune capture antérieure n’est reconstruite.
 - L’écoute utilise le cycle de vie normal de l’IME, sans service permanent et sans notification persistante.
-- Si Android a arrêté le processus, le presse-papiers système courant est relu au prochain démarrage, sauf après `Tout effacer` ou une réinitialisation confirmée : dans ce cas le clip courant reste supprimé logiquement jusqu’au prochain vrai changement du presse-papiers. Les copies intermédiaires éventuellement survenues pendant l’arrêt ne peuvent pas être récupérées.
+- Si Android a arrêté le processus, le presse-papiers système courant est relu au prochain démarrage, sauf après `Tout effacer` ou une réinitialisation confirmée : dans ce cas le clip courant reste supprimé logiquement jusqu’au prochain changement prouvé du presse-papiers. Les copies intermédiaires éventuellement survenues pendant l’arrêt ne peuvent pas être récupérées. Après un clear/reset, le contrôleur persiste le marqueur source capturé avant la purge, jamais un booléen d’identité. Sur API 31+, seul un callback dont le timestamp source non nul est différent peut lever la suppression ; timestamp identique (collision possible) ou absent reste supprimé. Sur API 24–30, où les callbacks de classification n’existent pas, le prochain callback listener est la preuve legacy documentée. Le démarrage ne lève jamais ce marqueur.
 - Tant que le processus vit, chaque changement est placé dans une file FIFO d’ingestion ; une copie lente n’est pas abandonnée parce qu’une nouvelle arrive.
 - Désactiver l’historique demande confirmation puis efface la base, les fichiers, les miniatures, les autorisations temporaires et les caches mémoire.
 - Sur Android 7 à 9, ce consentement avertit aussi que le système permet encore à d’autres applications en arrière-plan de lire le presse-papiers avant sa copie dans l’historique chiffré.
@@ -129,6 +129,8 @@ Le flag Android sensible est un indice de présentation, pas un mécanisme de ch
 Adaptateur Android minimal autour de `ClipboardManager` :
 
 - lit un instantané défensif du `primaryClip` ;
+- fige le flag sensible dès l’acquisition de la description, puis fige chaque unité UTF-16 de texte/libellé avant toute validation ou copie ultérieure ;
+- fournit un marqueur source typé pour la suppression anti-réimport : timestamp API 31+ différent = changement prouvé, timestamp égal = collision possible, absent = inconnu ;
 - enregistre et retire le listener ;
 - transforme les exceptions de sécurité ou de fournisseur en résultats typés ;
 - ne persiste rien et ne dépend pas de l’interface.
@@ -242,7 +244,7 @@ Le manifest chiffré contient les MIME, replis texte, noms, ordre des éléments
 7. Le contrôleur publie la nouvelle liste et une proposition de collage pendant 20 secondes réellement visibles.
 8. Toute annulation ou erreur supprime les fragments temporaires.
 
-Le bouton `Tout effacer` écrit d’abord un état durable `CLEARING_ENABLED`, pose une barrière sur l’ingestion, retire temporairement l’écoute, annule et joint le travail actif ainsi que la file déjà acceptée, persiste un marqueur anti-réimport, purge, puis revient à `ENABLED` avec une file vide. Un crash reprend ce clear avant toute écoute. Le marqueur survit à un redémarrage et n’est retiré que par le prochain vrai callback de changement ; ainsi, aucune copie antérieure à la confirmation ne peut réapparaître après l’effacement.
+Le bouton `Tout effacer` écrit d’abord un état durable `CLEARING_ENABLED`, pose une barrière sur l’ingestion, retire temporairement l’écoute, annule et joint le travail actif ainsi que la file déjà acceptée, puis capture le clip courant **avant** de persister son marqueur anti-réimport et de purger. Un crash reprend ce clear avant toute écoute. Le marqueur survit à un redémarrage : sur API 31+, le listener capture d’abord le clip et ne le retire que si son timestamp source non nul diffère du timestamp persisté ; égal est `SAME_OR_COLLIDING`, absent est `UNKNOWN`, et tous deux restent supprimés. Sur API 24–30, le prochain callback listener est la preuve legacy du changement. Le démarrage ne retire jamais le marqueur ; ainsi, aucune copie antérieure à la confirmation ne peut réapparaître après l’effacement.
 
 ### 5.4 Flux de collage
 

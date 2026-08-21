@@ -89,22 +89,58 @@ class SystemClipboardGatewayTest {
     }
 
     @Test
-    fun `capture copies only the initially validated text length when a source grows`() {
-        manager.setPrimaryClip(ClipData.newPlainText("label", GrowingCharSequence("ab", "abc")))
+    fun `capture freezes text before later item metadata can mutate it`() {
+        val text = SwitchableCharSequence("before", "after!")
+        val html = SwitchableCharSequence("<b>before</b>", "<b>after!</b>")
+        val trigger = TriggeringCharSequence("later") {
+            text.useLaterValue()
+            html.useLaterValue()
+        }
+        val access = RecordingClipboardAccess(
+            ClipData(ClipDescription("label", arrayOf("text/html")), ClipData.Item(text, html.toString(), null, null)).apply {
+                addItem(ClipData.Item(trigger))
+            },
+        )
 
-        val snapshot = (SystemClipboardGateway(context).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+        val snapshot = (SystemClipboardGateway(access).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
 
-        assertEquals("ab", snapshot.items.single().text)
+        assertEquals("before", snapshot.items.first().text)
+        assertEquals("<b>before</b>", snapshot.items.first().htmlText)
     }
 
     @Test
-    fun `capture copies only the initially validated label length when a label grows`() {
+    fun `capture freezes label UTF-16 units before appending them`() {
+        val label = SingleReadCharSequence("\uD83D\uDC4D")
+        manager.setPrimaryClip(ClipData(ClipDescription(label, arrayOf("text/plain")), ClipData.Item("safe")))
+
+        val snapshot = (SystemClipboardGateway(context).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertEquals("\uD83D\uDC4D", snapshot.label)
+    }
+
+    @Test
+    fun `capture keeps an immediately frozen label when later reads mutate its source`() {
         val label = GrowingCharSequence("ok", "overflow")
         manager.setPrimaryClip(ClipData(ClipDescription(label, arrayOf("text/plain")), ClipData.Item("safe")))
 
         val snapshot = (SystemClipboardGateway(context).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
 
-        assertEquals("ov", snapshot.label)
+        assertEquals("ok", snapshot.label)
+    }
+
+    @Test
+    fun `capture snapshots sensitive metadata before hostile label access`() {
+        val extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+        val label = TriggeringCharSequence("label") {
+            extras.putBoolean("android.content.extra.IS_SENSITIVE", false)
+        }
+        val access = RecordingClipboardAccess(
+            ClipData(ClipDescription(label, arrayOf("text/plain")).apply { this.extras = extras }, ClipData.Item("safe")),
+        )
+
+        val snapshot = (SystemClipboardGateway(access).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertTrue(snapshot.isSensitive)
     }
 
     @Test
@@ -164,12 +200,12 @@ class SystemClipboardGatewayTest {
     }
 
     @Test
-    fun `api 26 timestamp identifies repeated classification callbacks for one copied clip`() {
+    fun `api 31 equal timestamp classification callbacks are not proven changed`() {
         val description = ClipDescription("label", arrayOf("text/plain"))
         val access = RecordingClipboardAccess(ClipData(description, ClipData.Item("one")))
         val gateway = SystemClipboardGateway(
             access,
-            timestampReader = ClipboardSourceTimestampReader { 101L },
+            sourceMarkerReader = ClipboardSourceMarkerReader { ClipboardSourceMarker.PlatformTimestamp(101L) },
         )
         var callbacks = 0
         gateway.startListening { callbacks += 1 }
@@ -180,24 +216,68 @@ class SystemClipboardGatewayTest {
         val second = (gateway.capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
 
         assertEquals(2, callbacks)
-        assertEquals(101L, first.sourceTimestampMillis)
-        assertTrue(first.hasSameKnownSource(second))
+        assertEquals(ClipboardSourceMarker.PlatformTimestamp(101L), first.sourceMarker)
+        assertEquals(ClipboardSourceChange.SAME_OR_COLLIDING, compareClipboardSource(first.sourceMarker, second.sourceMarker))
     }
 
     @Test
-    fun `api 24 fallback explicitly reports source identity unavailable`() {
+    fun `equal timestamp different clips remain same or colliding`() {
+        val access = RecordingClipboardAccess(ClipData.newPlainText("label", "first"))
+        val gateway = SystemClipboardGateway(
+            access,
+            sourceMarkerReader = ClipboardSourceMarkerReader { ClipboardSourceMarker.PlatformTimestamp(77L) },
+        )
+
+        val first = (gateway.capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+        access.setPrimaryClip(ClipData.newPlainText("label", "second"))
+        val second = (gateway.capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertEquals("first", first.items.single().text)
+        assertEquals("second", second.items.single().text)
+        assertEquals(ClipboardSourceChange.SAME_OR_COLLIDING, compareClipboardSource(first.sourceMarker, second.sourceMarker))
+    }
+
+    @Test
+    fun `different timestamp including wall clock rollback proves a later copy`() {
+        assertEquals(
+            ClipboardSourceChange.DEFINITELY_CHANGED,
+            compareClipboardSource(
+                ClipboardSourceMarker.PlatformTimestamp(101L),
+                ClipboardSourceMarker.PlatformTimestamp(99L),
+            ),
+        )
+    }
+
+    @Test
+    fun `api 24 through 30 listener callback is explicit legacy proof`() {
         val description = ClipDescription("label", arrayOf("text/plain"))
         val access = RecordingClipboardAccess(ClipData(description, ClipData.Item("one")))
 
         val snapshot = (
             SystemClipboardGateway(
                 access,
-                timestampReader = PlatformClipboardSourceTimestampReader(sdkInt = 25),
+                sourceMarkerReader = PlatformClipboardSourceMarkerReader(sdkInt = 30),
             ).capturePrimaryClip() as ClipboardGatewayResult.Captured
         ).snapshot
 
-        assertEquals(null, snapshot.sourceTimestampMillis)
-        assertFalse(snapshot.hasSameKnownSource(snapshot))
+        assertEquals(ClipboardSourceMarker.LegacyListenerEvent, snapshot.sourceMarker)
+        assertEquals(
+            ClipboardSourceChange.DEFINITELY_CHANGED,
+            compareClipboardSource(ClipboardSourceMarker.LegacyListenerEvent, snapshot.sourceMarker),
+        )
+    }
+
+    @Test
+    fun `unavailable timestamp and mixed platform evidence are unknown`() {
+        assertEquals(ClipboardSourceChange.UNKNOWN, compareClipboardSource(null, ClipboardSourceMarker.PlatformTimestamp(1L)))
+        assertEquals(
+            ClipboardSourceChange.UNKNOWN,
+            compareClipboardSource(ClipboardSourceMarker.PlatformTimestamp(1L), ClipboardSourceMarker.TimestampUnavailable),
+        )
+        assertEquals(
+            ClipboardSourceChange.UNKNOWN,
+            compareClipboardSource(ClipboardSourceMarker.PlatformTimestamp(1L), ClipboardSourceMarker.LegacyListenerEvent),
+        )
     }
 
     @Test
@@ -234,8 +314,71 @@ class SystemClipboardGatewayTest {
         override val length: Int
             get() = if (lengthReads++ == 0) initiallyVisible.length else laterVisible.length
 
-        override fun get(index: Int): Char = laterVisible[index]
-        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = laterVisible.subSequence(startIndex, endIndex)
+        override fun get(index: Int): Char = initiallyVisible[index]
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = initiallyVisible.subSequence(startIndex, endIndex)
+    }
+
+    private class SwitchableCharSequence(
+        private val firstValue: String,
+        private val laterValue: String,
+    ) : CharSequence {
+        private var later = false
+
+        override val length: Int get() = value.length
+        override fun get(index: Int): Char = value[index]
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = value.subSequence(startIndex, endIndex)
+
+        fun useLaterValue() {
+            later = true
+        }
+
+        override fun toString(): String = value
+
+        private val value: String get() = if (later) laterValue else firstValue
+    }
+
+    private class TriggeringCharSequence(
+        private val value: String,
+        private val onFirstRead: () -> Unit,
+    ) : CharSequence {
+        private var triggered = false
+
+        override val length: Int
+            get() {
+                trigger()
+                return value.length
+            }
+
+        override fun get(index: Int): Char {
+            trigger()
+            return value[index]
+        }
+
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence {
+            trigger()
+            return value.subSequence(startIndex, endIndex)
+        }
+
+        private fun trigger() {
+            if (!triggered) {
+                triggered = true
+                onFirstRead()
+            }
+        }
+    }
+
+    private class SingleReadCharSequence(
+        private val value: String,
+    ) : CharSequence {
+        private val readIndices = mutableSetOf<Int>()
+
+        override val length: Int get() = value.length
+        override fun get(index: Int): Char {
+            check(readIndices.add(index)) { "UTF-16 unit $index read twice" }
+            return value[index]
+        }
+
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = value.subSequence(startIndex, endIndex)
     }
 
     private class ThrowingCharSequence : CharSequence {
@@ -255,6 +398,9 @@ class SystemClipboardGatewayTest {
         }
         override fun removeListener(listener: ClipboardManager.OnPrimaryClipChangedListener) {
             listeners -= listener
+        }
+        fun setPrimaryClip(value: ClipData?) {
+            clip = value
         }
         fun dispatchChange() = listeners.forEach { it.onPrimaryClipChanged() }
     }

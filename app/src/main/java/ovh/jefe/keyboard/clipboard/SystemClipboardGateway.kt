@@ -18,16 +18,13 @@ internal class SystemClipSnapshot(
     val isSensitive: Boolean,
     items: List<SystemClipItemSnapshot>,
     /**
-     * The platform timestamp for the copied source clip, when Android exposes one. A null value
-     * means that a controller cannot distinguish a classification callback from a new copy.
+     * Evidence a controller may persist while suppressing the current primary clip. It is never a
+     * Boolean identity: equal timestamps can collide, and absent evidence must fail closed.
      */
-    val sourceTimestampMillis: Long? = null,
+    val sourceMarker: ClipboardSourceMarker = ClipboardSourceMarker.TimestampUnavailable,
 ) {
     val mimeTypes: List<String> = immutableClipboardList(mimeTypes)
     val items: List<SystemClipItemSnapshot> = immutableClipboardList(items)
-
-    fun hasSameKnownSource(other: SystemClipSnapshot): Boolean =
-        sourceTimestampMillis != null && sourceTimestampMillis == other.sourceTimestampMillis
 
     override fun toString(): String =
         "SystemClipSnapshot(items=${items.size}, sensitive=$isSensitive)"
@@ -61,14 +58,51 @@ internal interface ClipboardManagerAccess {
     fun removeListener(listener: ClipboardManager.OnPrimaryClipChangedListener)
 }
 
-internal fun interface ClipboardSourceTimestampReader {
-    fun sourceTimestampMillis(description: ClipDescription): Long?
+internal sealed interface ClipboardSourceMarker {
+    /** API 24–30 listeners are documented to signal a new primary clip. */
+    data object LegacyListenerEvent : ClipboardSourceMarker
+
+    /** API 31+ carries the copied source timestamp, which can still collide. */
+    data class PlatformTimestamp(val valueMillis: Long) : ClipboardSourceMarker
+
+    /** API 31+ did not provide a usable timestamp; suppression must remain fail-closed. */
+    data object TimestampUnavailable : ClipboardSourceMarker
+}
+
+internal enum class ClipboardSourceChange {
+    DEFINITELY_CHANGED,
+    SAME_OR_COLLIDING,
+    UNKNOWN,
+}
+
+/**
+ * Returns only evidence a Task 7 listener may use after it has captured the current clip. A
+ * timestamp comparison is deliberately not an equality identity: matching values can represent
+ * either the same copied source or distinct copies in one millisecond.
+ */
+internal fun compareClipboardSource(
+    previous: ClipboardSourceMarker?,
+    current: ClipboardSourceMarker?,
+): ClipboardSourceChange = when {
+    previous is ClipboardSourceMarker.LegacyListenerEvent && current is ClipboardSourceMarker.LegacyListenerEvent ->
+        ClipboardSourceChange.DEFINITELY_CHANGED
+    previous is ClipboardSourceMarker.PlatformTimestamp && current is ClipboardSourceMarker.PlatformTimestamp ->
+        if (previous.valueMillis == current.valueMillis) {
+            ClipboardSourceChange.SAME_OR_COLLIDING
+        } else {
+            ClipboardSourceChange.DEFINITELY_CHANGED
+        }
+    else -> ClipboardSourceChange.UNKNOWN
+}
+
+internal fun interface ClipboardSourceMarkerReader {
+    fun sourceMarker(description: ClipDescription): ClipboardSourceMarker
 }
 
 internal class SystemClipboardGateway(
     private val clipboard: ClipboardManagerAccess,
     private val nowMillis: () -> Long = System::currentTimeMillis,
-    private val timestampReader: ClipboardSourceTimestampReader = PlatformClipboardSourceTimestampReader(),
+    private val sourceMarkerReader: ClipboardSourceMarkerReader = PlatformClipboardSourceMarkerReader(),
 ) {
     constructor(context: Context) : this(
         AndroidClipboardManagerAccess(requireNotNull(context.getSystemService(ClipboardManager::class.java))),
@@ -117,11 +151,11 @@ internal class SystemClipboardGateway(
 
     private fun capture(clip: ClipData): ClipboardGatewayResult {
         val description = clip.description
+        val sensitive = description.extras?.getBoolean(SENSITIVE_EXTRA, false) == true
+        val sourceMarker = sourceMarkerReader.sourceMarker(description)
         val itemCount = clip.itemCount
         val mimeTypeCount = description.mimeTypeCount
         val labelSource = description.label
-        val extras = description.extras
-        val sourceTimestampMillis = timestampReader.sourceTimestampMillis(description)
         if (itemCount == 0) return ClipboardGatewayResult.Empty
         if (itemCount > ClipboardLimits.MAX_GROUP_ITEMS) {
             return ClipboardGatewayResult.Failure(ClipboardFailure.TOO_MANY_ITEMS)
@@ -146,38 +180,28 @@ internal class SystemClipboardGateway(
         }
 
         var totalTextChars = 0L
-        val fields = ArrayList<CapturedItemFields>(itemCount)
+        val items = ArrayList<SystemClipItemSnapshot>(itemCount)
         for (index in 0 until itemCount) {
             val item = clip.getItemAt(index)
-            val text = item.text
-            val htmlText = item.htmlText
-            val boundedText = boundText(text, totalTextChars)
-                ?: if (text != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
-            totalTextChars += boundedText?.length ?: 0
-            val boundedHtml = boundText(htmlText, totalTextChars)
-                ?: if (htmlText != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
-            totalTextChars += boundedHtml?.length ?: 0
-            fields += CapturedItemFields(
-                text = boundedText,
-                htmlText = boundedHtml,
-                uri = item.uri,
+            val textSource = item.text
+            val text = textSource?.let { copyBoundedText(it, totalTextChars) }
+                ?: if (textSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
+            totalTextChars += text?.length ?: 0
+            val htmlSource = item.htmlText
+            val htmlText = htmlSource?.let { copyBoundedText(it, totalTextChars) }
+                ?: if (htmlSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
+            totalTextChars += htmlText?.length ?: 0
+            val uriSource = item.uri
+            val uri = uriSource?.let(::copyUri)
+                ?: if (uriSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA) else null
+            items += SystemClipItemSnapshot(
+                text = text,
+                htmlText = htmlText,
+                uri = uri,
                 hasIntent = item.intent != null,
             )
         }
 
-        val items = ArrayList<SystemClipItemSnapshot>(itemCount)
-        for (field in fields) {
-            val uri = field.uri?.let(::copyUri)
-                ?: if (field.uri != null) return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA) else null
-            items += SystemClipItemSnapshot(
-                text = field.text?.copy(),
-                htmlText = field.htmlText?.copy(),
-                uri = uri,
-                hasIntent = field.hasIntent,
-            )
-        }
-
-        val sensitive = extras?.getBoolean(SENSITIVE_EXTRA, false) == true
         return ClipboardGatewayResult.Captured(
             SystemClipSnapshot(
                 capturedAtMillis = nowMillis(),
@@ -185,16 +209,15 @@ internal class SystemClipboardGateway(
                 mimeTypes = mimeTypes,
                 isSensitive = sensitive,
                 items = items,
-                sourceTimestampMillis = sourceTimestampMillis,
+                sourceMarker = sourceMarker,
             ),
         )
     }
 
-    private fun boundText(value: CharSequence?, total: Long): BoundedCharSequence? {
-        if (value == null) return null
+    private fun copyBoundedText(value: CharSequence, total: Long): String? {
         val length = value.length
         if (length < 0 || total > ClipboardLimits.MAX_SNAPSHOT_TEXT_CHARS - length) return null
-        return BoundedCharSequence(value, length)
+        return String(copyUtf16Units(value, length))
     }
 
     private fun copyUri(uri: Uri): Uri? {
@@ -205,59 +228,46 @@ internal class SystemClipboardGateway(
 
     private fun copyLabel(value: CharSequence): String? {
         val length = value.length
-        if (length < 0) return null
-        val copy = StringBuilder(minOf(length, ClipboardLimits.MAX_LABEL_CHARS * 2))
+        if (length < 0 || length > ClipboardLimits.MAX_LABEL_CHARS * 2) return null
+        val units = copyUtf16Units(value, length)
         var index = 0
         var codePoints = 0
-        while (index < length) {
+        while (index < units.size) {
             if (codePoints == ClipboardLimits.MAX_LABEL_CHARS) return null
-            val first = value[index]
-            if (first.isHighSurrogate() && index + 1 < length && value[index + 1].isLowSurrogate()) {
-                copy.append(first).append(value[index + 1])
+            val first = units[index]
+            if (first.isHighSurrogate() && index + 1 < units.size && units[index + 1].isLowSurrogate()) {
                 index += 2
             } else {
-                copy.append(first)
                 index += 1
             }
             codePoints += 1
         }
-        return copy.toString()
+        return String(units)
     }
+
+    private fun copyUtf16Units(value: CharSequence, length: Int): CharArray = CharArray(length) { index -> value[index] }
 
     private companion object {
         const val SENSITIVE_EXTRA = "android.content.extra.IS_SENSITIVE"
     }
 
-    private class CapturedItemFields(
-        val text: BoundedCharSequence?,
-        val htmlText: BoundedCharSequence?,
-        val uri: Uri?,
-        val hasIntent: Boolean,
-    )
-
-    private class BoundedCharSequence(
-        private val source: CharSequence,
-        val length: Int,
-    ) {
-        fun copy(): String {
-            val copy = StringBuilder(length)
-            for (index in 0 until length) {
-                copy.append(source[index])
-            }
-            return copy.toString()
-        }
-    }
 }
 
 internal fun <T> immutableClipboardList(values: List<T>): List<T> =
     Collections.unmodifiableList(ArrayList(values))
 
-internal class PlatformClipboardSourceTimestampReader(
+internal class PlatformClipboardSourceMarkerReader(
     private val sdkInt: Int = Build.VERSION.SDK_INT,
-) : ClipboardSourceTimestampReader {
+) : ClipboardSourceMarkerReader {
     @SuppressLint("NewApi") // sdkInt is injected for tests and explicitly guarded below.
-    override fun sourceTimestampMillis(description: ClipDescription): Long? =
-        if (sdkInt >= Build.VERSION_CODES.O) description.timestamp.takeIf { it > 0L } else null
+    override fun sourceMarker(description: ClipDescription): ClipboardSourceMarker = when {
+        sdkInt in Build.VERSION_CODES.N..Build.VERSION_CODES.R -> ClipboardSourceMarker.LegacyListenerEvent
+        sdkInt >= Build.VERSION_CODES.S -> description.timestamp
+            .takeIf { it > 0L }
+            ?.let(ClipboardSourceMarker::PlatformTimestamp)
+            ?: ClipboardSourceMarker.TimestampUnavailable
+        else -> ClipboardSourceMarker.TimestampUnavailable
+    }
 }
 
 private class AndroidClipboardManagerAccess(

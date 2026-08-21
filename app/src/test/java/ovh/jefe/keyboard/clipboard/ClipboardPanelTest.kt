@@ -2,6 +2,8 @@ package ovh.jefe.keyboard.clipboard
 
 import android.content.Context
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
@@ -14,6 +16,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+import java.io.File
+import java.io.FileOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 class ClipboardPanelTest {
@@ -61,6 +67,45 @@ class ClipboardPanelTest {
             val surface = ContextCompat.getColor(themed, ovh.jefe.keyboard.R.color.paper)
             val text = ContextCompat.getColor(themed, ovh.jefe.keyboard.R.color.ink)
             assertTrue(ColorUtils.calculateContrast(text, surface) >= 4.5)
+        }
+    }
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "notnight")
+    fun `render light clipboard panel`() = renderPanel("clipboard-panel-light.png")
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Config(qualifiers = "night")
+    fun `render dark clipboard panel`() = renderPanel("clipboard-panel-dark.png")
+
+    private fun renderPanel(fileName: String) {
+        val view = ClipboardPanelView(context)
+        view.render(
+            ClipboardPanelUiState.Ready(
+                listOf(
+                    ClipboardTileUi("1", "Bonjour depuis Jefe", "Texte · 18 o", true, false),
+                    ClipboardTileUi("2", "Contenu sensible", "Texte · 24 o", false, true),
+                    ClipboardTileUi("3", "photo-vacances.jpg", "Image · 2 Mo", false, false),
+                    ClipboardTileUi("4", "3 éléments", "Groupe · 640 Ko", false, false),
+                ),
+            ),
+        )
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(660, View.MeasureSpec.EXACTLY),
+        )
+        view.layout(0, 0, 1080, 660)
+        val bitmap = Bitmap.createBitmap(1080, 660, Bitmap.Config.ARGB_8888)
+        view.draw(Canvas(bitmap))
+        val colors = buildSet {
+            for (y in 0 until bitmap.height step 12) for (x in 0 until bitmap.width step 12) add(bitmap.getPixel(x, y))
+        }
+        assertTrue(colors.size > 4)
+        System.getenv("VISUAL_OUTPUT_DIR")?.let(::File)?.also(File::mkdirs)?.resolve(fileName)?.let { file ->
+            FileOutputStream(file).use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            assertTrue(file.isFile && file.length() > 0)
         }
     }
 

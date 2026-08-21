@@ -60,7 +60,10 @@ class SystemClipboardGatewayTest {
     fun `capture returns empty when the system has no primary clip`() {
         manager.clearPrimaryClip()
 
-        assertSame(ClipboardGatewayResult.Empty, SystemClipboardGateway(context).capturePrimaryClip())
+        val result = SystemClipboardGateway(context).capturePrimaryClip()
+
+        assertTrue(result is ClipboardGatewayResult.Empty)
+        assertEquals(null, result.sourceMarker)
     }
 
     @Test
@@ -129,18 +132,34 @@ class SystemClipboardGatewayTest {
     }
 
     @Test
-    fun `capture snapshots sensitive metadata before hostile label access`() {
-        val extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+    fun `capture snapshots sensitive metadata before hostile clip label access`() {
+        lateinit var clip: ClipData
         val label = TriggeringCharSequence("label") {
-            extras.putBoolean("android.content.extra.IS_SENSITIVE", false)
+            clip.description.extras?.putBoolean("android.content.extra.IS_SENSITIVE", false)
         }
+        clip = ClipData(
+            ClipDescription(label, arrayOf("text/plain")).apply {
+                extras = PersistableBundle().apply { putBoolean("android.content.extra.IS_SENSITIVE", true) }
+            },
+            ClipData.Item("safe"),
+        )
         val access = RecordingClipboardAccess(
-            ClipData(ClipDescription(label, arrayOf("text/plain")).apply { this.extras = extras }, ClipData.Item("safe")),
+            clip,
         )
 
         val snapshot = (SystemClipboardGateway(access).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
 
         assertTrue(snapshot.isSensitive)
+    }
+
+    @Test
+    fun `capture reads hostile growing text length once before freezing it`() {
+        val text = SingleLengthGrowingCharSequence("ok", "a value that must never be sized")
+        val access = RecordingClipboardAccess(ClipData.newPlainText("label", text))
+
+        val snapshot = (SystemClipboardGateway(access).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertEquals("ok", snapshot.items.single().text)
     }
 
     @Test
@@ -164,6 +183,30 @@ class SystemClipboardGatewayTest {
         assertEquals(
             ClipboardFailure.INVALID_METADATA,
             (SystemClipboardGateway(context).capturePrimaryClip() as ClipboardGatewayResult.Failure).failure,
+        )
+    }
+
+    @Test
+    fun `rejected clip preserves its marker so a valid later clip proves change`() {
+        val access = RecordingClipboardAccess(tooManyItemsClip())
+        val timestamps = ArrayDeque(listOf(100L, 101L))
+        val gateway = SystemClipboardGateway(
+            access,
+            sourceMarkerReader = ClipboardSourceMarkerReader {
+                ClipboardSourceMarker.PlatformTimestamp(timestamps.removeFirst())
+            },
+        )
+
+        val rejected = gateway.capturePrimaryClip()
+        access.setPrimaryClip(ClipData.newPlainText("label", "valid"))
+        val accepted = gateway.capturePrimaryClip()
+
+        assertEquals(ClipboardFailure.TOO_MANY_ITEMS, (rejected as ClipboardGatewayResult.Failure).failure)
+        assertEquals(ClipboardSourceMarker.PlatformTimestamp(100L), rejected.sourceMarker)
+        assertTrue(accepted is ClipboardGatewayResult.Captured)
+        assertEquals(
+            ClipboardSourceChange.DEFINITELY_CHANGED,
+            compareClipboardSource(rejected.sourceMarker, accepted.sourceMarker),
         )
     }
 
@@ -381,6 +424,22 @@ class SystemClipboardGatewayTest {
         override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = value.subSequence(startIndex, endIndex)
     }
 
+    private class SingleLengthGrowingCharSequence(
+        private val initialValue: String,
+        private val laterValue: String,
+    ) : CharSequence {
+        private var lengthReads = 0
+
+        override val length: Int
+            get() = when (lengthReads++) {
+                0 -> initialValue.length
+                else -> throw IllegalStateException("hostile length changed to ${laterValue.length}")
+            }
+
+        override fun get(index: Int): Char = initialValue[index]
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = initialValue.subSequence(startIndex, endIndex)
+    }
+
     private class ThrowingCharSequence : CharSequence {
         override val length: Int get() = 1
         override fun get(index: Int): Char = throw IllegalStateException("hostile source")
@@ -403,5 +462,9 @@ class SystemClipboardGatewayTest {
             clip = value
         }
         fun dispatchChange() = listeners.forEach { it.onPrimaryClipChanged() }
+    }
+
+    private fun tooManyItemsClip(): ClipData = ClipData.newPlainText("label", "first").apply {
+        repeat(ClipboardLimits.MAX_GROUP_ITEMS) { addItem(ClipData.Item("extra")) }
     }
 }

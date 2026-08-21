@@ -41,13 +41,25 @@ internal class SystemClipItemSnapshot(
 }
 
 internal sealed interface ClipboardGatewayResult {
-    data object Empty : ClipboardGatewayResult
+    /** Null only when no primary clip/description was observable at all. */
+    val sourceMarker: ClipboardSourceMarker?
+
+    class Empty(
+        override val sourceMarker: ClipboardSourceMarker?,
+    ) : ClipboardGatewayResult {
+        override fun toString(): String = "ClipboardGatewayResult.Empty"
+    }
 
     class Captured(val snapshot: SystemClipSnapshot) : ClipboardGatewayResult {
+        override val sourceMarker: ClipboardSourceMarker = snapshot.sourceMarker
+
         override fun toString(): String = "ClipboardGatewayResult.Captured(redacted)"
     }
 
-    class Failure(val failure: ClipboardFailure) : ClipboardGatewayResult {
+    class Failure(
+        val failure: ClipboardFailure,
+        override val sourceMarker: ClipboardSourceMarker? = null,
+    ) : ClipboardGatewayResult {
         override fun toString(): String = "ClipboardGatewayResult.Failure($failure)"
     }
 }
@@ -115,7 +127,7 @@ internal class SystemClipboardGateway(
     }
 
     fun capturePrimaryClip(): ClipboardGatewayResult = try {
-        val clip = clipboard.primaryClip() ?: return ClipboardGatewayResult.Empty
+        val clip = clipboard.primaryClip() ?: return ClipboardGatewayResult.Empty(null)
         capture(clip)
     } catch (_: SecurityException) {
         ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED)
@@ -153,28 +165,43 @@ internal class SystemClipboardGateway(
         val description = clip.description
         val sensitive = description.extras?.getBoolean(SENSITIVE_EXTRA, false) == true
         val sourceMarker = sourceMarkerReader.sourceMarker(description)
+        return try {
+            captureBounded(clip, description, sensitive, sourceMarker)
+        } catch (_: SecurityException) {
+            ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED, sourceMarker)
+        } catch (_: RuntimeException) {
+            ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED, sourceMarker)
+        }
+    }
+
+    private fun captureBounded(
+        clip: ClipData,
+        description: ClipDescription,
+        sensitive: Boolean,
+        sourceMarker: ClipboardSourceMarker,
+    ): ClipboardGatewayResult {
         val itemCount = clip.itemCount
         val mimeTypeCount = description.mimeTypeCount
         val labelSource = description.label
-        if (itemCount == 0) return ClipboardGatewayResult.Empty
+        if (itemCount == 0) return ClipboardGatewayResult.Empty(sourceMarker)
         if (itemCount > ClipboardLimits.MAX_GROUP_ITEMS) {
-            return ClipboardGatewayResult.Failure(ClipboardFailure.TOO_MANY_ITEMS)
+            return ClipboardGatewayResult.Failure(ClipboardFailure.TOO_MANY_ITEMS, sourceMarker)
         }
         if (mimeTypeCount > ClipboardLimits.MAX_MIME_TYPES) {
-            return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA)
+            return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
         }
 
         val label = if (labelSource == null) {
             null
         } else {
-            copyLabel(labelSource) ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA)
+            copyLabel(labelSource) ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
         }
         val mimeTypes = ArrayList<String>(mimeTypeCount)
         for (index in 0 until mimeTypeCount) {
             val mimeType = description.getMimeType(index)
-                ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA)
+                ?: return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
             if (mimeType.length > ClipboardLimits.MAX_MIME_CHARS) {
-                return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA)
+                return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker)
             }
             mimeTypes += String(mimeType.toCharArray())
         }
@@ -185,15 +212,15 @@ internal class SystemClipboardGateway(
             val item = clip.getItemAt(index)
             val textSource = item.text
             val text = textSource?.let { copyBoundedText(it, totalTextChars) }
-                ?: if (textSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
+                ?: if (textSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE, sourceMarker) else null
             totalTextChars += text?.length ?: 0
             val htmlSource = item.htmlText
             val htmlText = htmlSource?.let { copyBoundedText(it, totalTextChars) }
-                ?: if (htmlSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
+                ?: if (htmlSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE, sourceMarker) else null
             totalTextChars += htmlText?.length ?: 0
             val uriSource = item.uri
             val uri = uriSource?.let(::copyUri)
-                ?: if (uriSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA) else null
+                ?: if (uriSource != null) return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA, sourceMarker) else null
             items += SystemClipItemSnapshot(
                 text = text,
                 htmlText = htmlText,

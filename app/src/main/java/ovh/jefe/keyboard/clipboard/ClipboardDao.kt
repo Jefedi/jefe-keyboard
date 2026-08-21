@@ -23,6 +23,12 @@ internal interface ClipboardDao {
     @Query("SELECT * FROM clipboard_entries WHERE fingerprintSha256 = :fingerprint AND storageState = 'READY' LIMIT 1")
     suspend fun findReadyByFingerprint(fingerprint: String): ClipboardEntryEntity?
 
+    @Query("SELECT * FROM clipboard_entries WHERE id = :id LIMIT 1")
+    suspend fun entryById(id: String): ClipboardEntryEntity?
+
+    @Query("SELECT * FROM clipboard_entries WHERE storageState = 'READY' ORDER BY lastCopiedAt DESC")
+    suspend fun allReady(): List<ClipboardEntryEntity>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertEntry(entry: ClipboardEntryEntity)
 
@@ -37,6 +43,15 @@ internal interface ClipboardDao {
 
     @Query("UPDATE clipboard_entries SET storageState = :state WHERE id = :id")
     suspend fun updateState(id: String, state: String)
+
+    @Query(
+        """UPDATE clipboard_entries
+           SET lastCopiedAt = :lastCopiedAt,
+               isSensitive = CASE WHEN isSensitive = 1 OR :sensitive = 1 THEN 1 ELSE 0 END,
+               revision = revision + 1
+           WHERE id = :id AND storageState = 'READY'""",
+    )
+    suspend fun updateDuplicate(id: String, lastCopiedAt: Long, sensitive: Boolean): Int
 
     @Query("UPDATE clipboard_entries SET isPinned = :pinned, revision = revision + 1 WHERE id = :id AND storageState = 'READY'")
     suspend fun setPinned(id: String, pinned: Boolean): Int

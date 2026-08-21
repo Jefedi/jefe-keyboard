@@ -59,6 +59,12 @@ internal class ClipboardPrivateFileStore(context: Context) {
         return !file.exists() || file.delete()
     }
 
+    fun discard(staged: StagedClipboardFile): Boolean {
+        val file = resolveOwned("${staged.id}.part")
+        require(staged.file.canonicalFile == file)
+        return !file.exists() || file.delete()
+    }
+
     fun deletePartials() {
         root.listFiles().orEmpty()
             .filter { it.isFile && it.name.endsWith(".part") }
@@ -119,8 +125,10 @@ internal class ClipboardPrivateFileStore(context: Context) {
         }
 
         private fun reserve(count: Int) {
-            if (count > maxBytes - written) throw IOException("Clipboard entry exceeds private storage limit")
+            if (count > maxBytes - written) throw ClipboardLimitExceededException()
             written += count
         }
     }
 }
+
+internal class ClipboardLimitExceededException : IOException("Clipboard entry exceeds private storage limit")

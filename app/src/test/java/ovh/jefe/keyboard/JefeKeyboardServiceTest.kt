@@ -1004,6 +1004,72 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `validated translation consumes stale suggestions before feedback can mask them`() {
+        val connection = EditableInputConnection(context(), "b secret", 1)
+        val remoteInputs = mutableListOf<String>()
+        val service = testService(connection).apply {
+            translation = {
+                remoteInputs += it
+                RemoteResult.Failure("indisponible")
+            }
+        }
+        val root = createRootAndStart(service)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        assertTrue(root.railView.suggestionViews().any { it.text == "bon" })
+        connection.select(3, 9)
+        service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+
+        requireNotNull(root.keyboardView.onTranslateClick).invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+        assertEquals(listOf("secret"), remoteInputs)
+        assertEquals("bo secret", connection.text())
+        assertEquals(3, connection.selectionStart())
+        assertEquals(9, connection.selectionEnd())
+
+        shadowOf(Looper.getMainLooper()).idleFor(2_999, TimeUnit.MILLISECONDS)
+        assertEquals(TopRailState.Translation(TranslationFeedback.Error), root.railView.state)
+        shadowOf(Looper.getMainLooper()).idleFor(1, TimeUnit.MILLISECONDS)
+
+        assertEquals(TopRailState.Empty, root.railView.state)
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation launch preserves suggestions published by a newer editor action`() {
+        val connection = SynchronousSelectedTextCallbackInputConnection(
+            context(),
+            "b secret",
+            1,
+        )
+        val service = testService(connection).apply {
+            translation = { RemoteResult.Failure("indisponible") }
+        }
+        val root = createRootAndStart(service)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        connection.select(3, 9)
+        service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+        connection.onSelectedTextRead = {
+            connection.onSelectedTextRead = null
+            connection.replaceAll("", 0)
+            requireNotNull(root.keyboardView.onKeyChar).invoke("j")
+            connection.replaceAll("bo secret", 3)
+            connection.select(3, 9)
+        }
+
+        requireNotNull(root.keyboardView.onTranslateClick).invoke()
+        idleMainLooperUntil {
+            root.railView.state == TopRailState.Translation(TranslationFeedback.Error)
+        }
+        shadowOf(Looper.getMainLooper()).idleFor(3_000, TimeUnit.MILLISECONDS)
+
+        assertTrue(root.railView.suggestionViews().any { it.text == "je" })
+        service.onDestroy()
+    }
+
+    @Test
     fun `translation stays visible ignores duplicate taps and succeeds only after commit`() {
         val connection = EditableInputConnection(context(), "bonjour", 0, 7)
         val delayed = DelayedRemoteResult("hello")

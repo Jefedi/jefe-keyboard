@@ -316,7 +316,7 @@ open class JefeKeyboardService : InputMethodService() {
             clearTranslationFeedback()
             return
         }
-        launchTranslation(owner, failedAttempt.selection)
+        launchTranslation(owner, failedAttempt.selection, capturedSuggestions = null)
     }
 
     private fun isCurrentTranslationRetry(
@@ -758,12 +758,13 @@ open class JefeKeyboardService : InputMethodService() {
             return
         }
 
-        launchTranslation(owner, selection)
+        launchTranslation(owner, selection, capturedSuggestions = snapshot)
     }
 
     private fun launchTranslation(
         editorOwner: EditorOwner,
         selection: SelectionSnapshot,
+        capturedSuggestions: SuggestionSnapshot?,
     ) {
         if (!isCurrentEditorOwner(editorOwner)) return
         val owner = TranslationOwner(
@@ -782,6 +783,7 @@ open class JefeKeyboardService : InputMethodService() {
         translationFeedbackJob = null
         val attemptId = ++translationAttemptId
         failedTranslationAttempt = null
+        invalidateSuggestionsIfOwned(capturedSuggestions)
         setTranslationFeedback(TranslationFeedback.Loading)
         val job = sessionScope.launch(start = CoroutineStart.LAZY) {
             val result = try {

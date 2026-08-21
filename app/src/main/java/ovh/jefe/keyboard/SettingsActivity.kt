@@ -21,6 +21,12 @@ import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.PreferenceManager
+import androidx.preference.SwitchPreferenceCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import ovh.jefe.keyboard.clipboard.ClipboardActivation
+import ovh.jefe.keyboard.clipboard.ClipboardComponent
+import ovh.jefe.keyboard.clipboard.ClipboardHistoryActivity
 
 /** Setup and private-service settings with a single scrolling preference surface. */
 class SettingsActivity : AppCompatActivity(),
@@ -193,6 +199,7 @@ class SettingsActivity : AppCompatActivity(),
             configureUrlPreference(KEY_TRANSLATE_URL)
             configureApiKeyPreference(KEY_WHISPER_API_KEY)
             configureApiKeyPreference(KEY_TRANSLATE_API_KEY)
+            configureClipboard()
         }
 
         override fun onResume() {
@@ -254,6 +261,33 @@ class SettingsActivity : AppCompatActivity(),
                 editor.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
                 editor.transformationMethod = PasswordTransformationMethod.getInstance()
                 editor.setSelection(editor.text.length)
+            }
+        }
+
+        private fun configureClipboard() {
+            val component = ClipboardComponent.get(requireContext())
+            findPreference<SwitchPreferenceCompat>("clipboard_history_enabled")?.apply {
+                isChecked = component.controller.activation() == ClipboardActivation.ENABLED
+                onPreferenceChangeListener = Preference.OnPreferenceChangeListener { _, value ->
+                    viewLifecycleOwner.lifecycleScope.launch {
+                        if (value == true) component.controller.enable(privateEditor = true)
+                        else component.controller.disableAndPurge()
+                    }
+                    true
+                }
+            }
+            action("clipboard_history_open") {
+                startActivity(Intent(requireContext(), ClipboardHistoryActivity::class.java))
+            }
+            action("clipboard_history_clear") {
+                androidx.appcompat.app.AlertDialog.Builder(requireContext())
+                    .setTitle(R.string.clipboard_clear_confirm_title)
+                    .setMessage(R.string.clipboard_clear_confirm_message)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(R.string.clipboard_clear_all) { _, _ ->
+                        viewLifecycleOwner.lifecycleScope.launch { component.controller.clearAndResume() }
+                    }
+                    .show()
             }
         }
 

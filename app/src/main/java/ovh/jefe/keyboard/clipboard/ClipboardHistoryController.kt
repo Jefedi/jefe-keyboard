@@ -78,6 +78,8 @@ internal class ClipboardHistoryController(
     private var consumer: Job? = null
     @Volatile private var privateEditor = true
 
+    fun activation(): ClipboardActivation = activationStore.activation()
+
     fun start() {
         when (activationStore.activation()) {
             ClipboardActivation.DISABLED -> Unit

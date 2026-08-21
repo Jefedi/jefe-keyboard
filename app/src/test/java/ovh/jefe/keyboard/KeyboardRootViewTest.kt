@@ -30,6 +30,23 @@ class KeyboardRootViewTest {
     }
 
     @Test
+    fun `clipboard mode replaces keyboard and back restores it`() {
+        val root = KeyboardRootView(context)
+
+        root.showClipboard()
+
+        assertEquals(KeyboardRootMode.CLIPBOARD, root.mode)
+        assertEquals(View.VISIBLE, root.clipboardPanelView.visibility)
+        assertEquals(View.GONE, root.keyboardView.visibility)
+
+        root.showKeyboard()
+
+        assertEquals(KeyboardRootMode.KEYBOARD, root.mode)
+        assertEquals(View.GONE, root.clipboardPanelView.visibility)
+        assertEquals(View.VISIBLE, root.keyboardView.visibility)
+    }
+
+    @Test
     fun `rail stays forty eight dp and root height stays constant in every state`() {
         val root = KeyboardRootView(context)
         val states = listOf(

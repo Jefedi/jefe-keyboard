@@ -59,4 +59,25 @@
     <string name="rail_translation_error">Traduction impossible · Réessayer</string>
     <string name="api_key_configured">Configurée</string>
     <string name="api_key_not_configured">Non configurée</string>
+    <string name="cat_clipboard">Presse-papiers</string>
+    <string name="clipboard_history_title">Historique</string>
+    <string name="clipboard_history_enable_title">Activer l’historique</string>
+    <string name="clipboard_history_enable_summary">Stockage privé sur cet appareil · sans expiration</string>
+    <string name="clipboard_history_open_title">Ouvrir l’historique</string>
+    <string name="clipboard_history_open_summary">Jusqu’à 500 éléments et 250 Mo · les épinglés sont conservés</string>
+    <string name="clipboard_history_clear_summary">Supprime aussi les éléments épinglés</string>
+    <string name="clipboard_enable_action">Activer l’historique du presse-papiers</string>
+    <string name="clipboard_loading">Chargement…</string>
+    <string name="clipboard_empty">Copiez un texte, une image ou un fichier pour le retrouver ici.</string>
+    <string name="clipboard_error">Historique momentanément indisponible</string>
+    <string name="clipboard_back">Revenir au clavier</string>
+    <string name="clipboard_clear_all">Tout effacer</string>
+    <string name="clipboard_clear_confirm_title">Tout effacer ?</string>
+    <string name="clipboard_clear_confirm_message">Les éléments épinglés seront aussi supprimés.</string>
+    <string name="clipboard_pin">Épingler cet élément</string>
+    <string name="clipboard_delete">Supprimer cet élément</string>
+    <plurals name="clipboard_item_count">
+        <item quantity="one">%d élément</item>
+        <item quantity="other">%d éléments</item>
+    </plurals>
 </resources>

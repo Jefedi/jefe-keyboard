@@ -34,6 +34,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".clipboard.ClipboardHistoryActivity"
+            android:exported="false"
+            android:label="@string/clipboard_history_title" />
+
         <provider
             android:name=".clipboard.ClipboardContentProvider"
             android:authorities="${applicationId}.clipboard"

@@ -25,6 +25,22 @@
             app:summary="@string/setup_translate_summary" />
     </PreferenceCategory>
 
+    <PreferenceCategory app:title="@string/cat_clipboard">
+        <SwitchPreferenceCompat
+            app:key="clipboard_history_enabled"
+            app:title="@string/clipboard_history_enable_title"
+            app:summary="@string/clipboard_history_enable_summary"
+            app:defaultValue="false" />
+        <Preference
+            app:key="clipboard_history_open"
+            app:title="@string/clipboard_history_open_title"
+            app:summary="@string/clipboard_history_open_summary" />
+        <Preference
+            app:key="clipboard_history_clear"
+            app:title="@string/clipboard_clear_all"
+            app:summary="@string/clipboard_history_clear_summary" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="@string/cat_whisper">
         <EditTextPreference
             app:key="whisper_url"

@@ -215,6 +215,17 @@ class SettingsActivityTest {
     }
 
     @Test
+    fun `clipboard settings explain persistence quotas and private storage`() {
+        val fragment = settingsFragment(createActivity())
+        val toggle = requireNotNull(fragment.findPreference<Preference>("clipboard_history_enabled"))
+        val open = requireNotNull(fragment.findPreference<Preference>("clipboard_history_open"))
+
+        assertTrue(toggle.summary.toString().contains("privé"))
+        assertTrue(open.summary.toString().contains("500"))
+        assertTrue(open.summary.toString().contains("250 Mo"))
+    }
+
+    @Test
     fun `setup rows retain comfortable touch targets`() {
         val activity = createActivity()
         val recycler = findFirst(activity.window.decorView, RecyclerView::class.java)

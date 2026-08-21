@@ -1,0 +1,193 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "90e5d67b042285adf9360aa477c897d6",
+    "entities": [
+      {
+        "tableName": "clipboard_entries",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `lastCopiedAt` INTEGER NOT NULL, `kind` TEXT NOT NULL, `itemCount` INTEGER NOT NULL, `isPinned` INTEGER NOT NULL, `isSensitive` INTEGER NOT NULL, `storedByteSize` INTEGER NOT NULL, `revision` INTEGER NOT NULL, `fingerprintSha256` TEXT NOT NULL, `storageState` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastCopiedAt",
+            "columnName": "lastCopiedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "itemCount",
+            "columnName": "itemCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isPinned",
+            "columnName": "isPinned",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isSensitive",
+            "columnName": "isSensitive",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "storedByteSize",
+            "columnName": "storedByteSize",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fingerprintSha256",
+            "columnName": "fingerprintSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "storageState",
+            "columnName": "storageState",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_clipboard_entries_storageState_lastCopiedAt",
+            "unique": false,
+            "columnNames": [
+              "storageState",
+              "lastCopiedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_clipboard_entries_storageState_lastCopiedAt` ON `${TABLE_NAME}` (`storageState`, `lastCopiedAt`)"
+          },
+          {
+            "name": "index_clipboard_entries_fingerprintSha256",
+            "unique": false,
+            "columnNames": [
+              "fingerprintSha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_clipboard_entries_fingerprintSha256` ON `${TABLE_NAME}` (`fingerprintSha256`)"
+          }
+        ]
+      },
+      {
+        "tableName": "clipboard_items",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`entryId` TEXT NOT NULL, `itemIndex` INTEGER NOT NULL, `mimeType` TEXT NOT NULL, `textPayload` TEXT, `htmlPayload` TEXT, `blobId` TEXT, `safeDisplayName` TEXT, `plainByteSize` INTEGER NOT NULL, PRIMARY KEY(`entryId`, `itemIndex`), FOREIGN KEY(`entryId`) REFERENCES `clipboard_entries`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "entryId",
+            "columnName": "entryId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "itemIndex",
+            "columnName": "itemIndex",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mimeType",
+            "columnName": "mimeType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "textPayload",
+            "columnName": "textPayload",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "htmlPayload",
+            "columnName": "htmlPayload",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "blobId",
+            "columnName": "blobId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "safeDisplayName",
+            "columnName": "safeDisplayName",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "plainByteSize",
+            "columnName": "plainByteSize",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "entryId",
+            "itemIndex"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_clipboard_items_entryId",
+            "unique": false,
+            "columnNames": [
+              "entryId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_clipboard_items_entryId` ON `${TABLE_NAME}` (`entryId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "clipboard_entries",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "entryId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '90e5d67b042285adf9360aa477c897d6')"
+    ]
+  }
+}

@@ -21,12 +21,15 @@ internal class ClipboardComponent private constructor(context: Context) {
         "clipboard-history.db",
     ).build()
     val repository: ClipboardRepository
+    val payloadFiles: ClipboardPrivateFileStore
+    val grants = ClipboardGrantRegistry()
+    val editorSessions = EditorSessionRegistry()
     val controller: ClipboardHistoryController
 
     init {
-        val files = ClipboardPrivateFileStore(applicationContext)
-        repository = RoomClipboardRepository(database.clipboardDao(), files)
-        val ingestor = ClipboardIngestor(ContentResolverStreamSource(applicationContext.contentResolver), files)
+        payloadFiles = ClipboardPrivateFileStore(applicationContext)
+        repository = RoomClipboardRepository(database.clipboardDao(), payloadFiles)
+        val ingestor = ClipboardIngestor(ContentResolverStreamSource(applicationContext.contentResolver), payloadFiles)
         controller = ClipboardHistoryController(
             gateway = SystemClipboardGateway(applicationContext),
             pipeline = DefaultClipboardCapturePipeline(ingestor, repository),

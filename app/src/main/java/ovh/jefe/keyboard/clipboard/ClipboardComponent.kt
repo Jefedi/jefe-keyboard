@@ -11,6 +11,7 @@ import java.io.InputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal interface ClipboardRuntime {
@@ -23,6 +24,7 @@ internal interface ClipboardRuntime {
 
 internal class ClipboardComponent private constructor(context: Context) : ClipboardRuntime {
     private val applicationContext = context.applicationContext
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val database = Room.databaseBuilder(
         applicationContext,
         ClipboardDatabase::class.java,
@@ -43,9 +45,12 @@ internal class ClipboardComponent private constructor(context: Context) : Clipbo
             pipeline = DefaultClipboardCapturePipeline(ingestor, repository),
             repository = repository,
             activationStore = SharedPreferencesClipboardActivationStore(applicationContext),
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+            scope = applicationScope,
         )
-        controller.start()
+        applicationScope.launch {
+            repository.reconcile()
+            controller.start()
+        }
     }
 
     companion object {

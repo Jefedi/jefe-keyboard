@@ -65,6 +65,30 @@ class ClipboardPasteCoordinatorTest {
         assertEquals(1, connection.commitCalls)
     }
 
+    @Test
+    fun `textual group pastes all items in order with one editor mutation`() = runTest {
+        val connection = RecordingInputConnection()
+        val target = target(connection)
+        val group = LoadedClipboardEntry(
+            ClipboardEntrySummary(ClipboardEntryId("entry"), ClipboardKind.GROUP, 2, false, false, 6L, 1L, 1L),
+            listOf(
+                LoadedClipboardItem(0, "text/plain", "one", null, null, null, 3L),
+                LoadedClipboardItem(1, "text/plain", "two", null, null, null, 3L),
+            ),
+        )
+        val coordinator = ClipboardPasteCoordinator(
+            repository = SingleEntryRepository(group),
+            currentTarget = { target },
+            grants = ClipboardGrantRegistry(),
+        )
+
+        val result = coordinator.pasteEntry(ClipboardEntryId("entry"), target)
+
+        assertTrue(result is ClipboardPasteResult.Success)
+        assertEquals("one\ntwo", connection.committed)
+        assertEquals(1, connection.commitCalls)
+    }
+
     private fun target(connection: InputConnection, session: Long = 1L) = EditorTarget(
         sessionId = session,
         uid = 42,

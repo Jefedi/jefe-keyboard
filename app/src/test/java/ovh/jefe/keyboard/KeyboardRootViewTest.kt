@@ -32,10 +32,14 @@ class KeyboardRootViewTest {
     @Test
     fun `clipboard mode replaces keyboard and back restores it`() {
         val root = KeyboardRootView(context)
+        measureAndLayout(root, 1080)
+        val keyboardHeight = root.height
 
         root.showClipboard()
+        measureAndLayout(root, 1080)
 
         assertEquals(KeyboardRootMode.CLIPBOARD, root.mode)
+        assertEquals(keyboardHeight, root.height)
         assertEquals(View.VISIBLE, root.clipboardPanelView.visibility)
         assertEquals(View.GONE, root.keyboardView.visibility)
 

@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 
 internal class ClipboardTileUi(
     val id: String,
@@ -31,6 +32,7 @@ internal class ClipboardPanelController(
 ) {
     private val mutableState = MutableStateFlow<ClipboardPanelUiState>(ClipboardPanelUiState.Loading)
     val state: StateFlow<ClipboardPanelUiState> = mutableState
+    private var collectionJob: Job? = null
 
     init {
         refresh()
@@ -41,7 +43,8 @@ internal class ClipboardPanelController(
             mutableState.value = ClipboardPanelUiState.Disabled
             return
         }
-        scope.launch {
+        collectionJob?.cancel()
+        collectionJob = scope.launch {
             repository.observe().collectLatest { history ->
                 mutableState.value = when (history) {
                     ClipboardHistoryState.Disabled -> ClipboardPanelUiState.Disabled

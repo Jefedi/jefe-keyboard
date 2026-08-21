@@ -34,6 +34,23 @@ internal class ClipboardPasteCoordinator(
     ): ClipboardPasteResult {
         val loaded = repository.load(id) ?: return ClipboardPasteResult.Failure(ClipboardFailure.CORRUPT_ENTRY)
         loaded.use { entry ->
+            if (entry.summary.kind == ClipboardKind.GROUP) {
+                val textGroup = entry.items.map { it.textPayload }
+                if (textGroup.all { it != null }) {
+                    val joined = textGroup.filterNotNull().joinToString("\n")
+                    if (joined.toByteArray(Charsets.UTF_8).size > ClipboardLimits.MAX_DIRECT_COMMIT_TEXT_UTF8_BYTES) {
+                        return ClipboardPasteResult.Failure(ClipboardFailure.TEXT_TOO_LARGE_FOR_EDITOR)
+                    }
+                    if (!isCurrent(requestedTarget)) {
+                        return ClipboardPasteResult.Failure(ClipboardFailure.EDITOR_REJECTED)
+                    }
+                    return if (requestedTarget.inputConnection.commitText(joined, 1)) {
+                        ClipboardPasteResult.Success(entry.summary.isSensitive)
+                    } else {
+                        ClipboardPasteResult.Failure(ClipboardFailure.EDITOR_REJECTED)
+                    }
+                }
+            }
             val item = entry.items.firstOrNull { it.itemIndex == itemIndex }
                 ?: return ClipboardPasteResult.Failure(ClipboardFailure.CORRUPT_ENTRY)
             if (!isCurrent(requestedTarget)) return ClipboardPasteResult.Failure(ClipboardFailure.EDITOR_REJECTED)

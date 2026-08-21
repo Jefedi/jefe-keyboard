@@ -27,7 +27,7 @@ internal class KeyboardRootView @JvmOverloads constructor(
         )
         addView(
             clipboardPanelView.apply { visibility = GONE },
-            LayoutParams(LayoutParams.MATCH_PARENT, dp(282)),
+            LayoutParams(LayoutParams.MATCH_PARENT, dp(330)),
         )
         clipboardPanelView.onBack = ::showKeyboard
     }

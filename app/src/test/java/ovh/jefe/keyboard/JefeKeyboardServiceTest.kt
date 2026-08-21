@@ -589,6 +589,82 @@ class JefeKeyboardServiceTest {
     }
 
     @Test
+    fun `delayed expected callback before candidate click clears the stale rail`() {
+        val connection = EditableInputConnection(context(), "b here", 1)
+        val (service, root) = startRootService(connection)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+        connection.select(7)
+        service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+
+        candidate.performClick()
+
+        assertEquals("bo here", connection.text())
+        assertEquals(7, connection.selectionStart())
+        assertEquals(7, connection.selectionEnd())
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `candidate preflight validation exits clear the stale owned rail`() {
+        val cases = listOf(
+            CandidatePreflightCase(
+                name = "selected text",
+                prepare = { connection -> connection.select(0, 2) },
+                expectedSelection = EditorSelectionRange(0, 2),
+            ),
+            CandidatePreflightCase(
+                name = "unavailable text before cursor",
+                prepare = { connection -> connection.textBeforeCursorAvailable = false },
+                expectedSelection = EditorSelectionRange(2, 2),
+            ),
+            CandidatePreflightCase(
+                name = "unavailable extracted selection",
+                prepare = { connection -> connection.extractedTextMode = ExtractedTextMode.NULL },
+                expectedSelection = EditorSelectionRange(2, 2),
+            ),
+            CandidatePreflightCase(
+                name = "mismatched absolute cursor",
+                prepare = { connection -> connection.extractedStartOffsetAdjustment = 1 },
+                expectedSelection = EditorSelectionRange(2, 2),
+            ),
+        )
+        val failures = mutableListOf<String>()
+
+        cases.forEach { case ->
+            val connection = AdversarialCandidateInputConnection(context(), "b here", 1)
+            val (service, root) = startRootService(connection)
+            try {
+                requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+                val candidate = root.railView.suggestionViews().first { it.text == "bon" }
+                case.prepare(connection)
+                service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+
+                candidate.performClick()
+
+                val actualSelection = EditorSelectionRange(
+                    connection.selectionStart(),
+                    connection.selectionEnd(),
+                )
+                if (
+                    connection.text() != "bo here" ||
+                    actualSelection != case.expectedSelection ||
+                    root.railView.suggestionViews().isNotEmpty()
+                ) {
+                    failures += "${case.name}: text=${connection.text()}, " +
+                        "selection=$actualSelection, " +
+                        "suggestions=${root.railView.suggestionViews().map { it.text }}"
+                }
+            } finally {
+                service.onDestroy()
+            }
+        }
+
+        assertTrue("Invalid preflight rails: $failures", failures.isEmpty())
+    }
+
+    @Test
     fun `stale candidate cannot clear suggestions published by a newer editor action`() {
         val connection = SynchronousCandidateCursorCallbackInputConnection(
             context(),
@@ -854,6 +930,77 @@ class JefeKeyboardServiceTest {
         assertFalse(root.railView.state is TopRailState.Translation)
         assertTrue(root.railView.suggestionViews().isEmpty())
         service.onDestroy()
+    }
+
+    @Test
+    fun `delayed expected callback before blank translation clears the stale suggestion rail`() {
+        val connection = EditableInputConnection(context(), "b here", 1)
+        val remoteInputs = mutableListOf<String>()
+        val service = testService(connection).apply {
+            translation = {
+                remoteInputs += it
+                RemoteResult.Success("translated")
+            }
+        }
+        val root = createRootAndStart(service)
+        requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+        connection.select(7)
+        service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+
+        requireNotNull(root.keyboardView.onTranslateClick).invoke()
+        drainMainLooper()
+
+        assertTrue(remoteInputs.isEmpty())
+        assertEquals("bo here", connection.text())
+        assertEquals(7, connection.selectionStart())
+        assertEquals(7, connection.selectionEnd())
+        assertFalse(root.railView.state is TopRailState.Translation)
+        assertTrue(root.railView.suggestionViews().isEmpty())
+        service.onDestroy()
+    }
+
+    @Test
+    fun `translation preflight provenance exits clear the stale owned rail`() {
+        val failures = mutableListOf<String>()
+
+        listOf(ExtractedTextMode.NULL, ExtractedTextMode.INVALID_SELECTION).forEach { mode ->
+            val connection = EditableInputConnection(context(), "b", 1)
+            val remoteInputs = mutableListOf<String>()
+            val service = testService(connection).apply {
+                translation = {
+                    remoteInputs += it
+                    RemoteResult.Success("translated")
+                }
+            }
+            val root = createRootAndStart(service)
+            try {
+                requireNotNull(root.keyboardView.onKeyChar).invoke("o")
+                connection.replaceAll("secret public", 0)
+                connection.select(0, 6)
+                service.onUpdateSelection(1, 1, 2, 2, -1, -1)
+                connection.extractedTextMode = mode
+
+                requireNotNull(root.keyboardView.onTranslateClick).invoke()
+                drainMainLooper()
+
+                if (
+                    remoteInputs.isNotEmpty() ||
+                    connection.text() != "secret public" ||
+                    connection.selectionStart() != 0 ||
+                    connection.selectionEnd() != 6 ||
+                    root.railView.state is TopRailState.Translation ||
+                    root.railView.suggestionViews().isNotEmpty()
+                ) {
+                    failures += "$mode: remote=$remoteInputs, text=${connection.text()}, " +
+                        "selection=${connection.selectionStart()}..${connection.selectionEnd()}, " +
+                        "rail=${root.railView.state}"
+                }
+            } finally {
+                service.onDestroy()
+            }
+        }
+
+        assertTrue("Invalid translation preflight rails: $failures", failures.isEmpty())
     }
 
     @Test
@@ -1746,6 +1893,12 @@ private enum class ExtractedTextMode {
     INVALID_SELECTION,
 }
 
+private data class CandidatePreflightCase(
+    val name: String,
+    val prepare: (AdversarialCandidateInputConnection) -> Unit,
+    val expectedSelection: EditorSelectionRange,
+)
+
 private open class EditableInputConnection(
     context: Context,
     text: String,
@@ -1818,6 +1971,23 @@ private open class EditableInputConnection(
     fun selectionStart(): Int = Selection.getSelectionStart(content)
 
     fun selectionEnd(): Int = Selection.getSelectionEnd(content)
+}
+
+private class AdversarialCandidateInputConnection(
+    context: Context,
+    text: String,
+    selectionStart: Int,
+) : EditableInputConnection(context, text, selectionStart) {
+    var textBeforeCursorAvailable = true
+    var extractedStartOffsetAdjustment = 0
+
+    override fun getTextBeforeCursor(length: Int, flags: Int): CharSequence? =
+        if (textBeforeCursorAvailable) super.getTextBeforeCursor(length, flags) else null
+
+    override fun getExtractedText(request: ExtractedTextRequest?, flags: Int): ExtractedText? =
+        super.getExtractedText(request, flags)?.also { extracted ->
+            extracted.startOffset += extractedStartOffsetAdjustment
+        }
 }
 
 private class RejectingCommitInputConnection(

@@ -429,31 +429,42 @@ open class JefeKeyboardService : InputMethodService() {
     private fun acceptSuggestion(root: KeyboardRootView, word: String) {
         var owner = captureEditorOwner(root) ?: return
         val snapshot = suggestionSnapshot ?: return
+        if (word !in snapshot.suggestions) return
         if (
             snapshot.generation != owner.generation ||
             snapshot.connection !== owner.connection ||
             snapshot.root !== owner.root ||
-            snapshot.selectionRevision != owner.selectionRevision ||
-            word !in snapshot.suggestions
+            snapshot.selectionRevision != owner.selectionRevision
         ) {
+            invalidateSuggestionsIfOwned(snapshot)
             return
         }
         val selectedText = owner.connection.getSelectedText(0)
         if (!continueSuggestionAction(owner, snapshot)) return
-        if (!selectedText.isNullOrEmpty()) return
+        if (!selectedText.isNullOrEmpty()) {
+            invalidateSuggestionsIfOwned(snapshot)
+            return
+        }
 
         val textBeforeCursor = owner.connection.getTextBeforeCursor(MAX_TEXT_CONTEXT, 0)?.toString()
         if (!continueSuggestionAction(owner, snapshot)) return
-        textBeforeCursor ?: return
-        if (textBeforeCursor != snapshot.textBeforeCursor) return
+        if (textBeforeCursor == null || textBeforeCursor != snapshot.textBeforeCursor) {
+            invalidateSuggestionsIfOwned(snapshot)
+            return
+        }
 
         val currentWord = TextContextParser.parse(textBeforeCursor).currentWord
         val cursor = captureCandidateCursor(owner.connection, currentWord)
         if (!continueSuggestionAction(owner, snapshot)) return
-        cursor ?: return
-        if (cursor != snapshot.absoluteCursor) return
+        if (cursor == null || cursor != snapshot.absoluteCursor) {
+            invalidateSuggestionsIfOwned(snapshot)
+            return
+        }
         val tokenStart = cursor - currentWord.length
-        if (tokenStart < 0) return
+        if (tokenStart < 0) {
+            invalidateSuggestionsIfOwned(snapshot)
+            return
+        }
         val collapsedSelection = EditorSelectionRange(cursor, cursor)
         val tokenSelection = EditorSelectionRange(tokenStart, cursor)
         if (!suggestionGate.recordExpectedSelection(collapsedSelection, tokenSelection)) {
@@ -729,6 +740,7 @@ open class JefeKeyboardService : InputMethodService() {
         val selectedText = owner.connection.getSelectedText(0)?.toString()
         if (!continueSuggestionAction(owner, snapshot)) return
         if (selectedText.isNullOrBlank()) {
+            invalidateSuggestionsIfOwned(snapshot)
             Toast.makeText(this, "Sélectionnez du texte d'abord", Toast.LENGTH_SHORT).show()
             return
         }
@@ -737,6 +749,7 @@ open class JefeKeyboardService : InputMethodService() {
         }
         if (!continueSuggestionAction(owner, snapshot)) return
         if (selection == null) {
+            invalidateSuggestionsIfOwned(snapshot)
             Toast.makeText(
                 this,
                 "Impossible de vérifier cette sélection dans l'éditeur.",

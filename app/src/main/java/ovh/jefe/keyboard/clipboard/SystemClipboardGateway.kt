@@ -1,18 +1,34 @@
 package ovh.jefe.keyboard.clipboard
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
+import android.annotation.SuppressLint
+import android.os.Build
+import java.util.ArrayList
+import java.util.Collections
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal class SystemClipSnapshot(
     val capturedAtMillis: Long,
     val label: String?,
-    val mimeTypes: List<String>,
+    mimeTypes: List<String>,
     val isSensitive: Boolean,
-    val items: List<SystemClipItemSnapshot>,
+    items: List<SystemClipItemSnapshot>,
+    /**
+     * The platform timestamp for the copied source clip, when Android exposes one. A null value
+     * means that a controller cannot distinguish a classification callback from a new copy.
+     */
+    val sourceTimestampMillis: Long? = null,
 ) {
+    val mimeTypes: List<String> = immutableClipboardList(mimeTypes)
+    val items: List<SystemClipItemSnapshot> = immutableClipboardList(items)
+
+    fun hasSameKnownSource(other: SystemClipSnapshot): Boolean =
+        sourceTimestampMillis != null && sourceTimestampMillis == other.sourceTimestampMillis
+
     override fun toString(): String =
         "SystemClipSnapshot(items=${items.size}, sensitive=$isSensitive)"
 }
@@ -45,9 +61,14 @@ internal interface ClipboardManagerAccess {
     fun removeListener(listener: ClipboardManager.OnPrimaryClipChangedListener)
 }
 
+internal fun interface ClipboardSourceTimestampReader {
+    fun sourceTimestampMillis(description: ClipDescription): Long?
+}
+
 internal class SystemClipboardGateway(
     private val clipboard: ClipboardManagerAccess,
     private val nowMillis: () -> Long = System::currentTimeMillis,
+    private val timestampReader: ClipboardSourceTimestampReader = PlatformClipboardSourceTimestampReader(),
 ) {
     constructor(context: Context) : this(
         AndroidClipboardManagerAccess(requireNotNull(context.getSystemService(ClipboardManager::class.java))),
@@ -100,6 +121,7 @@ internal class SystemClipboardGateway(
         val mimeTypeCount = description.mimeTypeCount
         val labelSource = description.label
         val extras = description.extras
+        val sourceTimestampMillis = timestampReader.sourceTimestampMillis(description)
         if (itemCount == 0) return ClipboardGatewayResult.Empty
         if (itemCount > ClipboardLimits.MAX_GROUP_ITEMS) {
             return ClipboardGatewayResult.Failure(ClipboardFailure.TOO_MANY_ITEMS)
@@ -129,11 +151,15 @@ internal class SystemClipboardGateway(
             val item = clip.getItemAt(index)
             val text = item.text
             val htmlText = item.htmlText
-            totalTextChars = checkedTextLength(totalTextChars, text) ?: return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE)
-            totalTextChars = checkedTextLength(totalTextChars, htmlText) ?: return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE)
+            val boundedText = boundText(text, totalTextChars)
+                ?: if (text != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
+            totalTextChars += boundedText?.length ?: 0
+            val boundedHtml = boundText(htmlText, totalTextChars)
+                ?: if (htmlText != null) return ClipboardGatewayResult.Failure(ClipboardFailure.ENTRY_TOO_LARGE) else null
+            totalTextChars += boundedHtml?.length ?: 0
             fields += CapturedItemFields(
-                text = text,
-                htmlText = htmlText,
+                text = boundedText,
+                htmlText = boundedHtml,
                 uri = item.uri,
                 hasIntent = item.intent != null,
             )
@@ -144,8 +170,8 @@ internal class SystemClipboardGateway(
             val uri = field.uri?.let(::copyUri)
                 ?: if (field.uri != null) return ClipboardGatewayResult.Failure(ClipboardFailure.INVALID_METADATA) else null
             items += SystemClipItemSnapshot(
-                text = field.text?.let(::copyText),
-                htmlText = field.htmlText?.let(::copyText),
+                text = field.text?.copy(),
+                htmlText = field.htmlText?.copy(),
                 uri = uri,
                 hasIntent = field.hasIntent,
             )
@@ -159,18 +185,17 @@ internal class SystemClipboardGateway(
                 mimeTypes = mimeTypes,
                 isSensitive = sensitive,
                 items = items,
+                sourceTimestampMillis = sourceTimestampMillis,
             ),
         )
     }
 
-    private fun checkedTextLength(total: Long, value: CharSequence?): Long? {
-        if (value == null) return total
-        val length = value.length.toLong()
-        val next = total + length
-        return next.takeIf { it >= total && it <= ClipboardLimits.MAX_SNAPSHOT_TEXT_CHARS.toLong() }
+    private fun boundText(value: CharSequence?, total: Long): BoundedCharSequence? {
+        if (value == null) return null
+        val length = value.length
+        if (length < 0 || total > ClipboardLimits.MAX_SNAPSHOT_TEXT_CHARS - length) return null
+        return BoundedCharSequence(value, length)
     }
-
-    private fun copyText(value: CharSequence): String = StringBuilder(value.length).append(value).toString()
 
     private fun copyUri(uri: Uri): Uri? {
         val serialized = uri.toString()
@@ -179,13 +204,15 @@ internal class SystemClipboardGateway(
     }
 
     private fun copyLabel(value: CharSequence): String? {
-        val copy = StringBuilder(minOf(value.length, ClipboardLimits.MAX_LABEL_CHARS))
+        val length = value.length
+        if (length < 0) return null
+        val copy = StringBuilder(minOf(length, ClipboardLimits.MAX_LABEL_CHARS * 2))
         var index = 0
         var codePoints = 0
-        while (index < value.length) {
+        while (index < length) {
             if (codePoints == ClipboardLimits.MAX_LABEL_CHARS) return null
             val first = value[index]
-            if (first.isHighSurrogate() && index + 1 < value.length && value[index + 1].isLowSurrogate()) {
+            if (first.isHighSurrogate() && index + 1 < length && value[index + 1].isLowSurrogate()) {
                 copy.append(first).append(value[index + 1])
                 index += 2
             } else {
@@ -202,11 +229,35 @@ internal class SystemClipboardGateway(
     }
 
     private class CapturedItemFields(
-        val text: CharSequence?,
-        val htmlText: String?,
+        val text: BoundedCharSequence?,
+        val htmlText: BoundedCharSequence?,
         val uri: Uri?,
         val hasIntent: Boolean,
     )
+
+    private class BoundedCharSequence(
+        private val source: CharSequence,
+        val length: Int,
+    ) {
+        fun copy(): String {
+            val copy = StringBuilder(length)
+            for (index in 0 until length) {
+                copy.append(source[index])
+            }
+            return copy.toString()
+        }
+    }
+}
+
+internal fun <T> immutableClipboardList(values: List<T>): List<T> =
+    Collections.unmodifiableList(ArrayList(values))
+
+internal class PlatformClipboardSourceTimestampReader(
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
+) : ClipboardSourceTimestampReader {
+    @SuppressLint("NewApi") // sdkInt is injected for tests and explicitly guarded below.
+    override fun sourceTimestampMillis(description: ClipDescription): Long? =
+        if (sdkInt >= Build.VERSION_CODES.O) description.timestamp.takeIf { it > 0L } else null
 }
 
 private class AndroidClipboardManagerAccess(

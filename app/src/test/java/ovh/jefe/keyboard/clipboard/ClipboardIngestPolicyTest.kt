@@ -4,6 +4,7 @@ import android.net.Uri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -31,6 +32,9 @@ class ClipboardIngestPolicyTest {
         assertRejected(snapshot(mimeTypes = List(65) { "text/plain" }, item = item(text = "x")), ClipboardFailure.INVALID_METADATA)
         assertRejected(snapshot(item = item(uri = "content://${"x".repeat(8_193)}")), ClipboardFailure.INVALID_METADATA)
         assertRejected(snapshot(mimeTypes = listOf("text/\u0001plain"), item = item(text = "x")), ClipboardFailure.INVALID_METADATA)
+        assertRejected(snapshot(item = item(html = "<b>no fallback</b>")), ClipboardFailure.UNSUPPORTED)
+        assertRejected(snapshot(items = listOf(item(text = "safe"), item(hasIntent = true))), ClipboardFailure.UNSUPPORTED)
+        assertRejected(snapshot(items = listOf(item(text = "safe"), item(uri = "https://example.com"))), ClipboardFailure.UNSUPPORTED)
     }
 
     @Test
@@ -66,6 +70,14 @@ class ClipboardIngestPolicyTest {
 
         assertEquals(ClipboardKind.TEXT, accepted.kind)
         assertEquals(0, accepted.items.single().itemIndex)
+    }
+
+    @Test
+    fun `accepted item collections cannot be mutated through list casts`() {
+        val accepted = accept(snapshot(items = listOf(item(text = "one"), item(text = "two"))))
+
+        assertUnmodifiable(accepted.items)
+        assertUnmodifiable(accepted.items.first().candidateMimeTypes)
     }
 
     private fun assertAccepted(value: SystemClipSnapshot, kind: ClipboardKind) {
@@ -105,4 +117,10 @@ class ClipboardIngestPolicyTest {
         hasIntent = hasIntent,
         isSensitive = sensitive,
     )
+
+    private fun assertUnmodifiable(value: List<*>) {
+        @Suppress("UNCHECKED_CAST")
+        val mutable = value as MutableList<Any?>
+        assertThrows(UnsupportedOperationException::class.java) { mutable.add(Any()) }
+    }
 }

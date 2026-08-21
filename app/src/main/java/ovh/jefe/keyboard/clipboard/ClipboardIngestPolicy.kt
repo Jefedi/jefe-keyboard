@@ -7,8 +7,10 @@ internal sealed interface ClipboardPolicyDecision {
     class Accept(
         val kind: ClipboardKind,
         val isSensitive: Boolean,
-        val items: List<AcceptedClipboardItem>,
+        items: List<AcceptedClipboardItem>,
     ) : ClipboardPolicyDecision {
+        val items: List<AcceptedClipboardItem> = immutableClipboardList(items)
+
         override fun toString(): String = "ClipboardPolicyDecision.Accept(kind=$kind, items=${items.size}, redacted=true)"
     }
 
@@ -17,10 +19,14 @@ internal sealed interface ClipboardPolicyDecision {
     }
 }
 
-internal data class AcceptedClipboardItem(
+internal class AcceptedClipboardItem(
     val itemIndex: Int,
-    val candidateMimeTypes: List<String>,
-)
+    candidateMimeTypes: List<String>,
+) {
+    val candidateMimeTypes: List<String> = immutableClipboardList(candidateMimeTypes)
+
+    override fun toString(): String = "AcceptedClipboardItem(index=$itemIndex, mimeCount=${candidateMimeTypes.size})"
+}
 
 internal object ClipboardIngestPolicy {
     fun evaluate(snapshot: SystemClipSnapshot, privateEditor: Boolean): ClipboardPolicyDecision = try {
@@ -45,16 +51,9 @@ internal object ClipboardIngestPolicy {
         if (snapshot.items.any { it.uri?.scheme.equals("file", ignoreCase = true) }) {
             return ClipboardPolicyDecision.Reject(ClipboardFailure.UNSUPPORTED)
         }
-        if (snapshot.items.all { it.text == null && it.htmlText == null && it.uri == null }) {
-            return ClipboardPolicyDecision.Reject(ClipboardFailure.UNSUPPORTED)
-        }
-
-        val kind = if (snapshot.items.size > 1) {
-            ClipboardKind.GROUP
-        } else {
-            classifySingle(snapshot.items.single(), mimeTypes)
-                ?: return ClipboardPolicyDecision.Reject(ClipboardFailure.UNSUPPORTED)
-        }
+        val itemKinds = snapshot.items.map { classifySingle(it, mimeTypes) }
+        if (itemKinds.any { it == null }) return ClipboardPolicyDecision.Reject(ClipboardFailure.UNSUPPORTED)
+        val kind = if (snapshot.items.size > 1) ClipboardKind.GROUP else requireNotNull(itemKinds.single())
         return ClipboardPolicyDecision.Accept(
             kind = kind,
             isSensitive = snapshot.isSensitive || privateEditor || snapshot.items.any { it.isSensitive },
@@ -72,7 +71,7 @@ internal object ClipboardIngestPolicy {
             }
             normalized += mimeType.lowercase(Locale.ROOT)
         }
-        return normalized.toList()
+        return immutableClipboardList(normalized.toList())
     }
 
     private fun validLabel(label: String?): Boolean =
@@ -82,7 +81,7 @@ internal object ClipboardIngestPolicy {
         uri == null || uri.toString().length <= ClipboardLimits.MAX_URI_CHARS
 
     private fun classifySingle(item: SystemClipItemSnapshot, mimeTypes: List<String>): ClipboardKind? = when {
-        item.htmlText != null -> ClipboardKind.HTML
+        item.htmlText != null && item.text != null -> ClipboardKind.HTML
         item.uri?.scheme.equals("content", ignoreCase = true) -> when {
             mimeTypes.any { it.startsWith("image/") } -> ClipboardKind.IMAGE
             mimeTypes.any { it.startsWith("video/") } -> ClipboardKind.VIDEO

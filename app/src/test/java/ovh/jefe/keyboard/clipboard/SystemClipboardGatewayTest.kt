@@ -12,6 +12,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -88,6 +89,34 @@ class SystemClipboardGatewayTest {
     }
 
     @Test
+    fun `capture copies only the initially validated text length when a source grows`() {
+        manager.setPrimaryClip(ClipData.newPlainText("label", GrowingCharSequence("ab", "abc")))
+
+        val snapshot = (SystemClipboardGateway(context).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertEquals("ab", snapshot.items.single().text)
+    }
+
+    @Test
+    fun `capture copies only the initially validated label length when a label grows`() {
+        val label = GrowingCharSequence("ok", "overflow")
+        manager.setPrimaryClip(ClipData(ClipDescription(label, arrayOf("text/plain")), ClipData.Item("safe")))
+
+        val snapshot = (SystemClipboardGateway(context).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertEquals("ov", snapshot.label)
+    }
+
+    @Test
+    fun `capture turns hostile character indexing into access denied`() {
+        manager.setPrimaryClip(ClipData.newPlainText("label", ThrowingCharSequence()))
+
+        val result = SystemClipboardGateway(context).capturePrimaryClip()
+
+        assertEquals(ClipboardFailure.ACCESS_DENIED, (result as ClipboardGatewayResult.Failure).failure)
+    }
+
+    @Test
     fun `capture rejects metadata before copying hostile values`() {
         manager.setPrimaryClip(ClipData(ClipDescription("x".repeat(4_097), arrayOf("text/plain")), ClipData.Item("safe")))
         assertEquals(
@@ -134,6 +163,59 @@ class SystemClipboardGatewayTest {
         assertEquals(1, callbacks)
     }
 
+    @Test
+    fun `api 26 timestamp identifies repeated classification callbacks for one copied clip`() {
+        val description = ClipDescription("label", arrayOf("text/plain"))
+        val access = RecordingClipboardAccess(ClipData(description, ClipData.Item("one")))
+        val gateway = SystemClipboardGateway(
+            access,
+            timestampReader = ClipboardSourceTimestampReader { 101L },
+        )
+        var callbacks = 0
+        gateway.startListening { callbacks += 1 }
+
+        access.dispatchChange()
+        val first = (gateway.capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+        access.dispatchChange()
+        val second = (gateway.capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertEquals(2, callbacks)
+        assertEquals(101L, first.sourceTimestampMillis)
+        assertTrue(first.hasSameKnownSource(second))
+    }
+
+    @Test
+    fun `api 24 fallback explicitly reports source identity unavailable`() {
+        val description = ClipDescription("label", arrayOf("text/plain"))
+        val access = RecordingClipboardAccess(ClipData(description, ClipData.Item("one")))
+
+        val snapshot = (
+            SystemClipboardGateway(
+                access,
+                timestampReader = PlatformClipboardSourceTimestampReader(sdkInt = 25),
+            ).capturePrimaryClip() as ClipboardGatewayResult.Captured
+        ).snapshot
+
+        assertEquals(null, snapshot.sourceTimestampMillis)
+        assertFalse(snapshot.hasSameKnownSource(snapshot))
+    }
+
+    @Test
+    fun `snapshot collections cannot be mutated through list casts`() {
+        manager.setPrimaryClip(ClipData.newPlainText("label", "safe"))
+
+        val snapshot = (SystemClipboardGateway(context).capturePrimaryClip() as ClipboardGatewayResult.Captured).snapshot
+
+        assertUnmodifiable(snapshot.mimeTypes)
+        assertUnmodifiable(snapshot.items)
+    }
+
+    private fun assertUnmodifiable(value: List<*>) {
+        @Suppress("UNCHECKED_CAST")
+        val mutable = value as MutableList<Any?>
+        assertThrows(UnsupportedOperationException::class.java) { mutable.add(Any()) }
+    }
+
     private class CoercionForbiddenItem(
         text: CharSequence,
         html: String,
@@ -141,5 +223,39 @@ class SystemClipboardGatewayTest {
     ) : ClipData.Item(text, html, null, uri) {
         override fun coerceToText(context: Context): CharSequence =
             throw AssertionError("capture must not coerce clipboard items")
+    }
+
+    private class GrowingCharSequence(
+        private val initiallyVisible: String,
+        private val laterVisible: String,
+    ) : CharSequence {
+        private var lengthReads = 0
+
+        override val length: Int
+            get() = if (lengthReads++ == 0) initiallyVisible.length else laterVisible.length
+
+        override fun get(index: Int): Char = laterVisible[index]
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = laterVisible.subSequence(startIndex, endIndex)
+    }
+
+    private class ThrowingCharSequence : CharSequence {
+        override val length: Int get() = 1
+        override fun get(index: Int): Char = throw IllegalStateException("hostile source")
+        override fun subSequence(startIndex: Int, endIndex: Int): CharSequence = throw IllegalStateException("hostile source")
+    }
+
+    private class RecordingClipboardAccess(
+        private var clip: ClipData?,
+    ) : ClipboardManagerAccess {
+        private val listeners = linkedSetOf<ClipboardManager.OnPrimaryClipChangedListener>()
+
+        override fun primaryClip(): ClipData? = clip
+        override fun addListener(listener: ClipboardManager.OnPrimaryClipChangedListener) {
+            listeners += listener
+        }
+        override fun removeListener(listener: ClipboardManager.OnPrimaryClipChangedListener) {
+            listeners -= listener
+        }
+        fun dispatchChange() = listeners.forEach { it.onPrimaryClipChanged() }
     }
 }

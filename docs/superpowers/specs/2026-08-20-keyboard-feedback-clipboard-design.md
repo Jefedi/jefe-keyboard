@@ -129,8 +129,8 @@ Le flag Android sensible est un indice de présentation, pas un mécanisme de ch
 Adaptateur Android minimal autour de `ClipboardManager` :
 
 - lit un instantané défensif du `primaryClip` ;
-- fige le flag sensible dès l’acquisition de la description, puis fige chaque unité UTF-16 de texte/libellé avant toute validation ou copie ultérieure ;
-- fournit un marqueur source typé pour la suppression anti-réimport : timestamp API 31+ différent = changement prouvé, timestamp égal = collision possible, absent = inconnu ;
+- acquiert d’abord le marqueur source dans un wrapper défensif dès la description obtenue, puis fige le flag sensible et chaque unité UTF-16 de texte/libellé avant toute validation ou copie ultérieure ;
+- fournit sur chaque résultat, même vide ou en échec, un marqueur source typé non nul pour la suppression anti-réimport : timestamp API 31+ différent = changement prouvé, timestamp égal = collision possible, `TimestampUnavailable` = inconnu ;
 - enregistre et retire le listener ;
 - transforme les exceptions de sécurité ou de fournisseur en résultats typés ;
 - ne persiste rien et ne dépend pas de l’interface.

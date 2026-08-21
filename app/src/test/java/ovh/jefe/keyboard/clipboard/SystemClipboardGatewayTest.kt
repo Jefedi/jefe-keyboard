@@ -63,7 +63,7 @@ class SystemClipboardGatewayTest {
         val result = SystemClipboardGateway(context).capturePrimaryClip()
 
         assertTrue(result is ClipboardGatewayResult.Empty)
-        assertEquals(null, result.sourceMarker)
+        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
     }
 
     @Test
@@ -78,6 +78,51 @@ class SystemClipboardGatewayTest {
 
         assertEquals(ClipboardFailure.ACCESS_DENIED, (result as ClipboardGatewayResult.Failure).failure)
         assertFalse(result.toString().contains("SENTINEL-clipboard-secret"))
+        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
+    }
+
+    @Test
+    fun `capture turns a throwing source marker reader into explicit unavailable evidence`() {
+        val access = RecordingClipboardAccess(ClipData.newPlainText("label", "safe"))
+        val gateway = SystemClipboardGateway(
+            access,
+            sourceMarkerReader = ClipboardSourceMarkerReader { throw SecurityException("source timestamp denied") },
+        )
+
+        val result = gateway.capturePrimaryClip()
+
+        assertTrue(result is ClipboardGatewayResult.Captured)
+        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
+    }
+
+    @Test
+    fun `capture turns a runtime failing source marker reader into explicit unavailable evidence`() {
+        val access = RecordingClipboardAccess(ClipData.newPlainText("label", "safe"))
+        val gateway = SystemClipboardGateway(
+            access,
+            sourceMarkerReader = ClipboardSourceMarkerReader { throw IllegalStateException("source timestamp failed") },
+        )
+
+        val result = gateway.capturePrimaryClip()
+
+        assertTrue(result is ClipboardGatewayResult.Captured)
+        assertEquals(ClipboardSourceMarker.TimestampUnavailable, result.sourceMarker)
+    }
+
+    @Test
+    fun `source evidence survives a security failure while reading sensitive extras`() {
+        val access = RecordingClipboardAccess(ClipData.newPlainText("label", "safe"))
+        val gateway = SystemClipboardGateway(
+            access,
+            sourceMarkerReader = ClipboardSourceMarkerReader { ClipboardSourceMarker.PlatformTimestamp(100L) },
+            sensitiveFlagReader = ClipboardSensitiveFlagReader { throw SecurityException("extras denied") },
+        )
+
+        val result = gateway.capturePrimaryClip()
+
+        assertEquals(ClipboardFailure.ACCESS_DENIED, (result as ClipboardGatewayResult.Failure).failure)
+        assertEquals(ClipboardSourceMarker.PlatformTimestamp(100L), result.sourceMarker)
+        assertFalse(result.toString().contains("extras denied"))
     }
 
     @Test
@@ -312,7 +357,10 @@ class SystemClipboardGatewayTest {
 
     @Test
     fun `unavailable timestamp and mixed platform evidence are unknown`() {
-        assertEquals(ClipboardSourceChange.UNKNOWN, compareClipboardSource(null, ClipboardSourceMarker.PlatformTimestamp(1L)))
+        assertEquals(
+            ClipboardSourceChange.UNKNOWN,
+            compareClipboardSource(ClipboardSourceMarker.TimestampUnavailable, ClipboardSourceMarker.PlatformTimestamp(1L)),
+        )
         assertEquals(
             ClipboardSourceChange.UNKNOWN,
             compareClipboardSource(ClipboardSourceMarker.PlatformTimestamp(1L), ClipboardSourceMarker.TimestampUnavailable),

@@ -41,11 +41,11 @@ internal class SystemClipItemSnapshot(
 }
 
 internal sealed interface ClipboardGatewayResult {
-    /** Null only when no primary clip/description was observable at all. */
-    val sourceMarker: ClipboardSourceMarker?
+    /** TimestampUnavailable represents unknown evidence; source evidence itself is never null. */
+    val sourceMarker: ClipboardSourceMarker
 
     class Empty(
-        override val sourceMarker: ClipboardSourceMarker?,
+        override val sourceMarker: ClipboardSourceMarker,
     ) : ClipboardGatewayResult {
         override fun toString(): String = "ClipboardGatewayResult.Empty"
     }
@@ -58,7 +58,7 @@ internal sealed interface ClipboardGatewayResult {
 
     class Failure(
         val failure: ClipboardFailure,
-        override val sourceMarker: ClipboardSourceMarker? = null,
+        override val sourceMarker: ClipboardSourceMarker = ClipboardSourceMarker.TimestampUnavailable,
     ) : ClipboardGatewayResult {
         override fun toString(): String = "ClipboardGatewayResult.Failure($failure)"
     }
@@ -93,8 +93,8 @@ internal enum class ClipboardSourceChange {
  * either the same copied source or distinct copies in one millisecond.
  */
 internal fun compareClipboardSource(
-    previous: ClipboardSourceMarker?,
-    current: ClipboardSourceMarker?,
+    previous: ClipboardSourceMarker,
+    current: ClipboardSourceMarker,
 ): ClipboardSourceChange = when {
     previous is ClipboardSourceMarker.LegacyListenerEvent && current is ClipboardSourceMarker.LegacyListenerEvent ->
         ClipboardSourceChange.DEFINITELY_CHANGED
@@ -111,10 +111,15 @@ internal fun interface ClipboardSourceMarkerReader {
     fun sourceMarker(description: ClipDescription): ClipboardSourceMarker
 }
 
+internal fun interface ClipboardSensitiveFlagReader {
+    fun isSensitive(description: ClipDescription): Boolean
+}
+
 internal class SystemClipboardGateway(
     private val clipboard: ClipboardManagerAccess,
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val sourceMarkerReader: ClipboardSourceMarkerReader = PlatformClipboardSourceMarkerReader(),
+    private val sensitiveFlagReader: ClipboardSensitiveFlagReader = PlatformClipboardSensitiveFlagReader,
 ) {
     constructor(context: Context) : this(
         AndroidClipboardManagerAccess(requireNotNull(context.getSystemService(ClipboardManager::class.java))),
@@ -127,7 +132,7 @@ internal class SystemClipboardGateway(
     }
 
     fun capturePrimaryClip(): ClipboardGatewayResult = try {
-        val clip = clipboard.primaryClip() ?: return ClipboardGatewayResult.Empty(null)
+        val clip = clipboard.primaryClip() ?: return ClipboardGatewayResult.Empty(ClipboardSourceMarker.TimestampUnavailable)
         capture(clip)
     } catch (_: SecurityException) {
         ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED)
@@ -163,15 +168,23 @@ internal class SystemClipboardGateway(
 
     private fun capture(clip: ClipData): ClipboardGatewayResult {
         val description = clip.description
-        val sensitive = description.extras?.getBoolean(SENSITIVE_EXTRA, false) == true
-        val sourceMarker = sourceMarkerReader.sourceMarker(description)
+        val sourceMarker = readSourceMarker(description)
         return try {
+            val sensitive = sensitiveFlagReader.isSensitive(description)
             captureBounded(clip, description, sensitive, sourceMarker)
         } catch (_: SecurityException) {
             ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED, sourceMarker)
         } catch (_: RuntimeException) {
             ClipboardGatewayResult.Failure(ClipboardFailure.ACCESS_DENIED, sourceMarker)
         }
+    }
+
+    private fun readSourceMarker(description: ClipDescription): ClipboardSourceMarker = try {
+        sourceMarkerReader.sourceMarker(description)
+    } catch (_: SecurityException) {
+        ClipboardSourceMarker.TimestampUnavailable
+    } catch (_: RuntimeException) {
+        ClipboardSourceMarker.TimestampUnavailable
     }
 
     private fun captureBounded(
@@ -295,6 +308,11 @@ internal class PlatformClipboardSourceMarkerReader(
             ?: ClipboardSourceMarker.TimestampUnavailable
         else -> ClipboardSourceMarker.TimestampUnavailable
     }
+}
+
+private object PlatformClipboardSensitiveFlagReader : ClipboardSensitiveFlagReader {
+    override fun isSensitive(description: ClipDescription): Boolean =
+        description.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
 }
 
 private class AndroidClipboardManagerAccess(
